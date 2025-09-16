@@ -4,7 +4,7 @@ import os
 import re
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-    QPushButton, QTextEdit, QComboBox, QMessageBox, QFileDialog
+    QPushButton, QTextEdit, QComboBox, QMessageBox, QFileDialog, QTableWidget, QTableWidgetItem, QHeaderView
 )
 from logic_analyzer import extract_channels, detect_pwm_freq, check_pwm_duty
 
@@ -84,6 +84,15 @@ class LogicAnalyzerGUI(QWidget):
         self.sampling_button.clicked.connect(self.run_sampling)
         left_panel.addWidget(self.sampling_button)
 
+        # Expected values table
+        self.expected_table = QTableWidget()
+        self.expected_table.setColumnCount(2)
+        self.expected_table.setHorizontalHeaderLabels(['Expected Freq (Hz)', 'Expected Duty (%)'])
+        self.update_expected_table()
+        left_panel.addWidget(QLabel("Expected Values:"))
+        left_panel.addWidget(self.expected_table)
+        self.channel_select.currentTextChanged.connect(self.update_expected_table)
+
         # Log box (with clear button)
         log_label_layout = QHBoxLayout()
         log_label_layout.addWidget(QLabel("Log:"))
@@ -122,6 +131,16 @@ class LogicAnalyzerGUI(QWidget):
         default_path = os.path.abspath("../../SLogic16U3-tools/cli/build/slogic_cli")
         self.cli_path = default_path
         self.cli_path_edit.setText(self.cli_path)
+
+    def update_expected_table(self):
+        num_channels = int(self.channel_select.currentText())
+        self.expected_table.setRowCount(num_channels)
+        for ch in range(num_channels):
+            freq_item = QTableWidgetItem("10000000")  # default 10MHz
+            duty_item = QTableWidgetItem("50")       # default 50%
+            self.expected_table.setItem(ch, 0, freq_item)
+            self.expected_table.setItem(ch, 1, duty_item)
+        self.expected_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
 
     def run_sampling(self):
         try:
@@ -168,6 +187,7 @@ class LogicAnalyzerGUI(QWidget):
                 raw = f.read()
             channels = extract_channels(raw, num_channels)
             self.output_box.append(f"Total samples: {len(channels[0])}")
+            all_pass = True
             for ch in range(num_channels):
                 samples = channels[ch][:1000]
                 freq = detect_pwm_freq(samples, sample_rate)
@@ -175,6 +195,20 @@ class LogicAnalyzerGUI(QWidget):
                 freq_str = f"{freq/1e6:.6f}MHz" if freq else "N/A"
                 duty_str = f"{duty*100:.2f}%" if duty is not None else "N/A"
                 self.output_box.append(f"CH{ch}: PWM freq = {freq_str}, duty cycle = {duty_str}")
+
+                # Check against expected
+                expected_freq = float(self.expected_table.item(ch, 0).text())
+                expected_duty = float(self.expected_table.item(ch, 1).text())
+                freq_match = freq is not None and abs(freq - expected_freq) < expected_freq * 0.05  # 5% tolerance
+                duty_match = duty is not None and abs(duty*100 - expected_duty) < 5                 # 5% tolerance
+                if not (freq_match and duty_match):
+                    all_pass = False
+                    self.output_box.append(f"  -> FAIL (Expected: {expected_freq}Hz, {expected_duty}%)")
+
+            if all_pass:
+                self.output_box.insertHtml('<br><span style="color:green;font-weight:bold;">PASS</span><br>')
+            else:
+                self.output_box.insertHtml('<br><span style="color:red;font-weight:bold;">FAIL</span><br>')
         except Exception as e:
             QMessageBox.critical(self, "Error", str(e))
 
