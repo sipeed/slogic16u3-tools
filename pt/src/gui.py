@@ -2,10 +2,14 @@ import sys
 import subprocess
 import os
 import re
+import threading
+import glob
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QTextEdit, QComboBox, QMessageBox, QFileDialog, QTableWidget, QTableWidgetItem, QHeaderView
 )
+from PyQt5.QtCore import pyqtSignal, QTimer
+from PyQt5.QtGui import QFont
 from logic_analyzer import extract_channels, detect_pwm_freq, check_pwm_duty
 
 def parse_sample_rate_input(rate_str):
@@ -23,12 +27,23 @@ def parse_sample_rate_input(rate_str):
     return rate, value, unit if unit else ''
 
 class LogicAnalyzerGUI(QWidget):
+    log_signal = pyqtSignal(str)
+    output_signal = pyqtSignal(str)
+    output_html_signal = pyqtSignal(str)
+
     def __init__(self):
         super().__init__()
         self.cli_path = os.path.abspath("../../SLogic16U3-tools/cli/build/slogic_cli")
         if not os.path.isfile(self.cli_path):
             self.cli_path = ""
         self.init_ui()
+        self.log_signal.connect(self.log_box.append)
+        self.output_signal.connect(self.output_box.append)
+        self.output_html_signal.connect(self.output_box.insertHtml)
+        # Add timer for real-time device detection
+        self.device_timer = QTimer(self)
+        self.device_timer.timeout.connect(self.update_device_status)
+        self.device_timer.start(1500)  # check every 1.5 seconds
 
     def init_ui(self):
         self.setWindowTitle("Logic Analyzer GUI")
@@ -36,6 +51,14 @@ class LogicAnalyzerGUI(QWidget):
         layout = QHBoxLayout()
         left_panel = QVBoxLayout()
         right_panel = QVBoxLayout()
+
+        # Device status label (big font)
+        self.device_status_label = QLabel()
+        font = QFont()
+        font.setPointSize(14)
+        font.setBold(True)
+        self.device_status_label.setFont(font)
+        left_panel.addWidget(self.device_status_label)
 
         # CLI path controls (inline)
         cli_path_layout = QHBoxLayout()
@@ -93,6 +116,21 @@ class LogicAnalyzerGUI(QWidget):
         left_panel.addWidget(self.expected_table)
         self.channel_select.currentTextChanged.connect(self.update_expected_table)
 
+        # --- OTA Block ---
+        ota_layout = QHBoxLayout()
+        self.ota_file_edit = QLineEdit()
+        self.ota_file_edit.setPlaceholderText("Select firmware.bin")
+        ota_file_btn = QPushButton("Select")
+        ota_file_btn.clicked.connect(self.select_ota_file)
+        self.ota_start_btn = QPushButton("OTA")
+        self.ota_start_btn.clicked.connect(self.run_ota)
+        ota_layout.addWidget(QLabel("OTA:"))
+        ota_layout.addWidget(self.ota_file_edit)
+        ota_layout.addWidget(ota_file_btn)
+        ota_layout.addWidget(self.ota_start_btn)
+        left_panel.addLayout(ota_layout)
+        # --- End OTA Block ---
+
         # Log box (with clear button)
         log_label_layout = QHBoxLayout()
         log_label_layout.addWidget(QLabel("Log:"))
@@ -121,6 +159,9 @@ class LogicAnalyzerGUI(QWidget):
         layout.addLayout(right_panel, 2)
         self.setLayout(layout)
 
+        # Now all widgets exist, safe to call
+        self.update_device_status()
+
     def select_cli(self):
         path, _ = QFileDialog.getOpenFileName(self, "Select slogic_cli", "", "Executable Files (*)")
         if path:
@@ -147,20 +188,16 @@ class LogicAnalyzerGUI(QWidget):
             if not self.cli_path or not os.path.isfile(self.cli_path):
                 QMessageBox.warning(self, "slogic_cli Not Found", "slogic_cli not found! Please select the correct path.")
                 return
-            # Parse sample rate and unit
             sample_rate_str = self.sample_rate_edit.text()
             sample_rate, rate_value, rate_unit = parse_sample_rate_input(sample_rate_str)
             num_channels = int(self.channel_select.currentText())
             volt_threshold = int(self.volt_threshold_edit.text())
-            # Generate output file name
             unit_str = rate_unit if rate_unit else ''
             filename = f"{num_channels}ch_{rate_value}{unit_str}_wave.bin"
             out_dir = os.path.abspath(".")
             file_path = os.path.join(out_dir, filename)
-            # Ensure the output file does not exist
             if os.path.exists(file_path):
                 os.remove(file_path)
-            # Compose slogic_cli command
             cmd = [
                 self.cli_path,
                 "--sr", str(sample_rate/10**6),  # in MHz
@@ -168,25 +205,34 @@ class LogicAnalyzerGUI(QWidget):
                 "--volt", str(volt_threshold)
             ]
             self.log_box.append(f"Running: {' '.join(cmd)}")
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            self.log_box.append(result.stdout)
-            if result.stderr:
-                self.log_box.append(result.stderr)
-            if result.returncode != 0:
-                raise RuntimeError(f"slogic_cli failed with return code {result.returncode}")
+            # Run in thread to avoid blocking GUI
+            threading.Thread(target=self._run_sampling_thread, args=(cmd, file_path, filename, num_channels, sample_rate), daemon=True).start()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", str(e))
+
+    def _run_sampling_thread(self, cmd, file_path, filename, num_channels, sample_rate):
+        try:
+            process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+            for line in process.stdout:
+                self.log_signal.emit(line.rstrip())
+            process.wait()
+            if process.returncode != 0:
+                self.log_signal.emit(f"slogic_cli failed with return code {process.returncode}")
+                return
             # Check output file
             if not os.path.exists(file_path):
-                # Try to find the latest .bin file
+                out_dir = os.path.dirname(file_path)
                 bin_files = [f for f in os.listdir(out_dir) if f.endswith("_wave.bin")]
                 if not bin_files:
-                    raise FileNotFoundError("No output .bin file found.")
+                    self.log_signal.emit("No output .bin file found.")
+                    return
                 filename = max(bin_files, key=lambda f: os.path.getctime(os.path.join(out_dir, f)))
                 file_path = os.path.join(out_dir, filename)
-            self.output_box.append(f"Parsing file: {filename}")
+            self.output_signal.emit(f"Parsing file: {filename}")
             with open(file_path, "rb") as f:
                 raw = f.read()
             channels = extract_channels(raw, num_channels)
-            self.output_box.append(f"Total samples: {len(channels[0])}")
+            self.output_signal.emit(f"Total samples: {len(channels[0])}")
             all_pass = True
             for ch in range(num_channels):
                 samples = channels[ch][:1000]
@@ -194,29 +240,90 @@ class LogicAnalyzerGUI(QWidget):
                 duty = check_pwm_duty(samples)
                 freq_str = f"{freq/1e6:.6f}MHz" if freq else "N/A"
                 duty_str = f"{duty*100:.2f}%" if duty is not None else "N/A"
-                self.output_box.append(f"CH{ch}: PWM freq = {freq_str}, duty cycle = {duty_str}")
+                self.output_signal.emit(f"CH{ch}: PWM freq = {freq_str}, duty cycle = {duty_str}")
 
-                # Check against expected
                 expected_freq = float(self.expected_table.item(ch, 0).text())
                 expected_duty = float(self.expected_table.item(ch, 1).text())
-                freq_match = freq is not None and abs(freq - expected_freq) < expected_freq * 0.05  # 5% tolerance
-                duty_match = duty is not None and abs(duty*100 - expected_duty) < 5                 # 5% tolerance
+                freq_match = freq is not None and abs(freq - expected_freq) < expected_freq * 0.05
+                duty_match = duty is not None and abs(duty*100 - expected_duty) < 5
                 if not (freq_match and duty_match):
                     all_pass = False
-                    self.output_box.append(f"  -> FAIL (Expected: {expected_freq}Hz, {expected_duty}%)")
-
+                    self.output_signal.emit(f"  -> FAIL (Expected: {expected_freq}Hz, {expected_duty}%)")
             if all_pass:
-                self.output_box.insertHtml('<br><span style="color:green;font-weight:bold;">PASS</span><br>')
+                self.output_html_signal.emit('<br><span style="color:green;font-weight:bold;">PASS</span><br>')
             else:
-                self.output_box.insertHtml('<br><span style="color:red;font-weight:bold;">FAIL</span><br>')
+                self.output_html_signal.emit('<br><span style="color:red;font-weight:bold;">FAIL</span><br>')
         except Exception as e:
-            QMessageBox.critical(self, "Error", str(e))
+            self.log_signal.emit(f"Error: {e}")
+
+    def select_ota_file(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Select firmware.bin", "", "BIN Files (*.bin)")
+        if path:
+            self.ota_file_edit.setText(path)
+
+    def run_ota(self):
+        firmware = self.ota_file_edit.text()
+        if not firmware or not os.path.isfile(firmware):
+            QMessageBox.warning(self, "No firmware", "Please select a valid firmware.bin file.")
+            return
+        ota_script = os.path.abspath("../ota/src/spi_flash.py")
+        cmd = ["python3", ota_script, firmware]
+        self.log_box.append(f"Running OTA: {' '.join(cmd)}")
+        threading.Thread(target=self._run_ota_thread, args=(cmd,), daemon=True).start()
+
+    def _run_ota_thread(self, cmd):
+        try:
+            process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+            for line in process.stdout:
+                self.log_signal.emit(line.rstrip())
+            process.wait()
+            if process.returncode != 0:
+                self.log_signal.emit(f"OTA failed with code {process.returncode}")
+        except Exception as e:
+            self.log_signal.emit(f"OTA error: {e}")
 
     def log_box_clear(self):
         self.log_box.clear()
 
     def output_box_clear(self):
         self.output_box.clear()
+
+    def update_device_status(self):
+        # Scan for SLogic devices by VID/PID
+        found = None
+        for dev in glob.glob('/sys/bus/usb/devices/*'):
+            try:
+                with open(os.path.join(dev, 'idVendor')) as f:
+                    vid = f.read().strip()
+                with open(os.path.join(dev, 'idProduct')) as f:
+                    pid = f.read().strip()
+                if vid.lower() == '359f':
+                    if pid.lower() == '3031':
+                        found = "SLogic16U3"
+                        break
+                    elif pid.lower() == '30f1':
+                        found = "SLogic16U3 OTA"
+                        break
+            except Exception:
+                continue
+        if found == "SLogic16U3":
+            self.device_status_label.setText("Found A device: SLogic16U3")
+            self.device_status_label.setStyleSheet("color: green;")
+            self.sampling_button.setEnabled(True)
+            self.ota_start_btn.setEnabled(False)
+            self.ota_file_edit.setEnabled(False)
+        elif found == "SLogic16U3 OTA":
+            self.device_status_label.setText("Found A device: SLogic16U3 OTA")
+            self.device_status_label.setStyleSheet("color: green;")
+            self.sampling_button.setEnabled(False)
+            self.ota_start_btn.setEnabled(True)
+            self.ota_file_edit.setEnabled(True)
+        else:
+            self.device_status_label.setText("No SLogic16U3 device found")
+            self.device_status_label.setStyleSheet("color: red;")
+            self.sampling_button.setEnabled(False)
+            self.ota_start_btn.setEnabled(False)
+            self.ota_file_edit.setEnabled(False)
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
