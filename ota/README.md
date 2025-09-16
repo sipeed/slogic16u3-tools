@@ -1,0 +1,1 @@
+usage: python spi_flash.py firmware.bin
