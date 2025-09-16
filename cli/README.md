@@ -32,3 +32,16 @@ cmake --build build
 # Received: 905969664 bytes, Speed: 299.89 MB/s(300.00 MB/s) is 'valid'
 
 ```
+
+
+```bash
+./build/slogic_cli --sr 800 --ch 4 --volt 1600
+
+python show.py 4ch_800M_wave.bin
+# Detected: 4 channels, 800000000 Hz sample rate
+# Total samples: 16777216
+# CH0: PWM freq = 10.073452MHz, duty cycle = 50.16%
+# CH1: PWM freq = 50.355330MHz, duty cycle = 53.73%
+# CH2: PWM freq = 50.413223MHz, duty cycle = 53.20%
+# CH3: PWM freq = 50.413223MHz, duty cycle = 54.23%
+```
