@@ -4,6 +4,7 @@ import os
 import re
 import threading
 import glob
+import time
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QTextEdit, QComboBox, QMessageBox, QFileDialog, QTableWidget, QTableWidgetItem, QHeaderView
@@ -131,6 +132,20 @@ class LogicAnalyzerGUI(QWidget):
         left_panel.addLayout(ota_layout)
         # --- End OTA Block ---
 
+        # --- Flash Control Block ---
+        flash_ctrl_layout = QHBoxLayout()
+        self.lock_btn = QPushButton("Lock")
+        self.lock_btn.clicked.connect(lambda: self.run_flash_cmd("lock"))
+        self.flash_btn = QPushButton("Flash")
+        self.flash_btn.clicked.connect(lambda: self.run_flash_cmd("flash"))
+        self.reset_btn = QPushButton("Reset")
+        self.reset_btn.clicked.connect(lambda: self.run_flash_cmd("reset"))
+        flash_ctrl_layout.addWidget(self.lock_btn)
+        flash_ctrl_layout.addWidget(self.flash_btn)
+        flash_ctrl_layout.addWidget(self.reset_btn)
+        left_panel.addLayout(flash_ctrl_layout)
+        # --- End Flash Control Block ---
+
         # Log box (with clear button)
         log_label_layout = QHBoxLayout()
         log_label_layout.addWidget(QLabel("Log:"))
@@ -212,10 +227,13 @@ class LogicAnalyzerGUI(QWidget):
 
     def _run_sampling_thread(self, cmd, file_path, filename, num_channels, sample_rate):
         try:
+            start = time.time()
             process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
             for line in process.stdout:
                 self.log_signal.emit(line.rstrip())
             process.wait()
+            elapsed = time.time() - start
+            self.output_signal.emit(f"Sampling operation cost: {elapsed:.2f} s")
             if process.returncode != 0:
                 self.log_signal.emit(f"slogic_cli failed with return code {process.returncode}")
                 return
@@ -273,10 +291,13 @@ class LogicAnalyzerGUI(QWidget):
 
     def _run_ota_thread(self, cmd):
         try:
+            start = time.time()
             process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
             for line in process.stdout:
                 self.log_signal.emit(line.rstrip())
             process.wait()
+            elapsed = time.time() - start
+            self.output_signal.emit(f"OTA operation cost: {elapsed:.2f} s")
             if process.returncode != 0:
                 self.log_signal.emit(f"OTA failed with code {process.returncode}")
         except Exception as e:
@@ -324,6 +345,33 @@ class LogicAnalyzerGUI(QWidget):
             self.sampling_button.setEnabled(False)
             self.ota_start_btn.setEnabled(False)
             self.ota_file_edit.setEnabled(False)
+
+    def run_flash_cmd(self, action):
+        # Fill in the actual command for each action
+        if action == "lock":
+            cmd = ["bash", "/home/sipeed007/gowin/scripts/efuse_lock.sh"]
+        elif action == "flash":
+            cmd = ["bash", "/home/sipeed007/gowin/scripts/gowin_flash.sh"]
+        elif action == "reset":
+            cmd = ["bash", "/home/sipeed007/gowin/scripts/usb_rst.sh"]
+        else:
+            return
+        self.log_box.append(f"Running: {' '.join(cmd)}")
+        threading.Thread(target=self._run_flash_cmd_thread, args=(cmd,), daemon=True).start()
+
+    def _run_flash_cmd_thread(self, cmd):
+        try:
+            start = time.time()
+            process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+            for line in process.stdout:
+                self.log_signal.emit(line.rstrip())
+            process.wait()
+            elapsed = time.time() - start
+            self.output_signal.emit(f"Flash operation ({' '.join(cmd)}) cost: {elapsed:.2f} s")
+            if process.returncode != 0:
+                self.log_signal.emit(f"Command failed with code {process.returncode}")
+        except Exception as e:
+            self.log_signal.emit(f"Command error: {e}")
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
