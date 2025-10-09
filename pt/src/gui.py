@@ -63,7 +63,7 @@ class LogicAnalyzerGUI(QWidget):
 
         # CLI path controls (inline)
         cli_path_layout = QHBoxLayout()
-        self.cli_path_edit = QLineEdit(self.cli_path or os.path.abspath("../../SLogic15U3-tools/cli/build/slogic_cli"))
+        self.cli_path_edit = QLineEdit(self.cli_path or os.path.abspath("../../SLogic16U3-tools/cli/build/slogic_cli"))
         self.cli_path_edit.setReadOnly(True)
         select_cli_btn = QPushButton("Select CLI")
         select_cli_btn.clicked.connect(self.select_cli)
