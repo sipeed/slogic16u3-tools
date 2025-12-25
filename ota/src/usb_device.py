@@ -9,8 +9,17 @@ class USBDevice:
         :param pid: 产品ID (Product ID)
         :param interface_num: 使用的接口编号（默认为0）
         """
+        import usb.backend.libusb1
+        backend = usb.backend.libusb1.get_backend()
+        if backend is None:
+            import os
+            backend = usb.backend.libusb1.get_backend(find_library=lambda x: os.getcwd())
+            if backend is None:
+                raise ValueError("未找到libusb1后端，请确保已安装libusb1")
+
         self.dev = usb.core.find(idVendor=vid, idProduct=pid)
         if self.dev is None:
+
             raise ValueError("设备未找到，请检查VID/PID或连接状态")
 
         self.interface_num = interface_num

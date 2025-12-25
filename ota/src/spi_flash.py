@@ -63,7 +63,7 @@ class SPIFlashDevice:
                 need = self.page_size
             data = payload[programed: programed+need]
             if data.count(0xFF) != len(data):
-                print(f'program 0x{addr+programed:06X}...')
+                print(f'[{100.0*programed/length:.2f}%]program 0x{addr+programed:06X}...')
                 self.program_page(addr+programed, data)
             else:
                 print(f'skip 0x{addr+programed:06X}...')
@@ -97,7 +97,7 @@ if __name__ == "__main__":
     import sys
 
     if len(sys.argv) < 2:
-        print('usage: python spi_flash.py firmware.bin')
+        print(f'usage: {sys.argv[0]} <firmware.bin>')
         sys.exit(1)
 
     # 直接读取文件（二进制模式）
@@ -107,12 +107,12 @@ if __name__ == "__main__":
     print(f"Read {firmware_size} bytes")
 
     alignment = 0x10000  # 64KB 对齐
-    padding_size = (alignment - (firmware_size % alignment)) % alignment  # 计算需要填充的长度
+    # padding_size = (alignment - (firmware_size % alignment)) % alignment  # 计算需要填充的长度
 
-    firmware += bytes([0xFF] * padding_size) # 在末尾补 0xFF
-    print(f'raw size: {firmware_size}')
-    firmware_size += padding_size
-    print(f'paded size: {firmware_size}')
+    # firmware += bytes([0xFF] * padding_size) # 在末尾补 0xFF
+    # print(f'raw size: {firmware_size}')
+    # firmware_size += padding_size
+    # print(f'paded size: {firmware_size}')
 
     with SPIFlashDevice(0x359F, 0x30F1) as flash: 
         # Reset flash
@@ -165,6 +165,8 @@ if __name__ == "__main__":
         # program
         flash.page_size = 0x20
         flash.program(start, firmware)
+        print(f"=======================================================================")
+        print("Check Program Result(True=Pass, False=Fail):")
         data = flash.read_data(start, firmware_size)
         # print(f"Dump {len(data)} bytes to rdback.bin")
         # open('rdback.bin', 'wb').write(data)
