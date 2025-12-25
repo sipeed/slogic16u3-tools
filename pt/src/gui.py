@@ -3,7 +3,7 @@ import subprocess
 import os
 import re
 import threading
-import glob
+import usb.core
 import time
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
@@ -312,21 +312,14 @@ class LogicAnalyzerGUI(QWidget):
     def update_device_status(self):
         # Scan for SLogic devices by VID/PID
         found = None
-        for dev in glob.glob('/sys/bus/usb/devices/*'):
-            try:
-                with open(os.path.join(dev, 'idVendor')) as f:
-                    vid = f.read().strip()
-                with open(os.path.join(dev, 'idProduct')) as f:
-                    pid = f.read().strip()
-                if vid.lower() == '359f':
-                    if pid.lower() == '3031':
-                        found = "SLogic16U3"
-                        break
-                    elif pid.lower() == '30f1':
-                        found = "SLogic16U3 OTA"
-                        break
-            except Exception:
-                continue
+        try:
+            if usb.core.find(idVendor=0x359f, idProduct=0x3031):
+                found = "SLogic16U3"
+            elif usb.core.find(idVendor=0x359f, idProduct=0x30f1):
+                found = "SLogic16U3 OTA"
+        except Exception:
+            pass
+            
         if found == "SLogic16U3":
             self.device_status_label.setText("Found A device: SLogic16U3")
             self.device_status_label.setStyleSheet("color: green;")
