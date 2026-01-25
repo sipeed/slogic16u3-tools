@@ -1,3 +1,5 @@
+import time
+
 from usb_device import USBDevice
 from spi_device import SPIDevice
 
@@ -25,7 +27,7 @@ class SPIFlashDevice:
         """Read unique ID (16 bytes)"""
         return self.spi.xfer(b'\x4B', 16, 4)
         
-    def read_data(self, addr, length):
+    def read_data(self, addr, length, opcode=0x0B, dummy=1):
         """Read data from specified address"""
         data = b''
         got = 0
@@ -33,7 +35,7 @@ class SPIFlashDevice:
             need = length - got
             if need > 0x50:
                 need = 0x50
-            data += self.spi.xfer(b'\x0B' + self._addr_to_bytes(addr+got), need, 1)
+            data += self.spi.xfer(bytes([opcode]) + self._addr_to_bytes(addr+got), need, dummy)
             got += need
         assert(len(data) == got)
         assert(length == got)
@@ -64,7 +66,18 @@ class SPIFlashDevice:
             data = payload[programed: programed+need]
             if data.count(0xFF) != len(data):
                 print(f'[{100.0*programed/length:.2f}%]program 0x{addr+programed:06X}...')
-                self.program_page(addr+programed, data)
+                ok = False
+                for _ in range(3):
+                    self.program_page(addr+programed, data)
+                    for _ in range(5):
+                        rd = self.read_data(addr+programed, need, opcode=0x03, dummy=0)
+                        if rd == data:
+                            ok = True
+                            break
+                    if ok:
+                        break
+                if not ok:
+                    raise ValueError(f'Page verify failed at 0x{addr+programed:06X}')
             else:
                 print(f'skip 0x{addr+programed:06X}...')
             programed += need
@@ -164,13 +177,34 @@ if __name__ == "__main__":
         print(f"=======================================================================")
         # program
         flash.page_size = 0x20
+        flash.spi.timeout = 2000
         flash.program(start, firmware)
         print(f"=======================================================================")
         print("Check Program Result(True=Pass, False=Fail):")
-        data = flash.read_data(start, firmware_size)
-        # print(f"Dump {len(data)} bytes to rdback.bin")
-        # open('rdback.bin', 'wb').write(data)
-        print(firmware == data)
+        ok = True
+        first_mismatch = None
+        chunk = 0x40
+        tries = 10
+        for offset in range(0, firmware_size, chunk):
+            need = min(chunk, firmware_size - offset)
+            expect = firmware[offset:offset + need]
+            matched = False
+            for _ in range(tries):
+                data = flash.read_data(start + offset, need, opcode=0x03, dummy=0)
+                if data == expect:
+                    matched = True
+                    break
+                time.sleep(0.003)
+            if not matched:
+                ok = False
+                first_mismatch = offset
+                break
+
+        if not ok:
+            mismatch = next((i for i, (a, b) in enumerate(zip(firmware[first_mismatch:], data)) if a != b), None)
+            mismatch = first_mismatch + (mismatch or 0)
+            print(f"verify mismatch at 0x{mismatch:06X}: fw=0x{firmware[mismatch]:02X} rd=0x{data[mismatch-first_mismatch]:02X}")
+        print(ok)
 
         # flash.page_size = 0x40
         # data = b''

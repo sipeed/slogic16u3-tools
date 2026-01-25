@@ -1,3 +1,5 @@
+import usb.core
+
 from usb_device import USBDevice
 from spi_config import SPIConfigRegister
 from spi_data_packet import SPIPacket
@@ -45,8 +47,21 @@ class SPIDevice:
         packet = SPIPacket(
             command=SPIPacket.CMD_READ_DATA
         )
-        self.usb.write(packet.serialize(), self.timeout)
-        return self.usb.read(nbytes, self.timeout)
+        last_err = None
+        for _ in range(3):
+            self.usb.write(packet.serialize(), self.timeout)
+            try:
+                return self.usb.read(nbytes, self.timeout)
+            except usb.core.USBError as e:
+                last_err = e
+                if e.errno in (5, 32, 75, 110):
+                    try:
+                        self.usb.dev.clear_halt(self.usb.ep_in.bEndpointAddress)
+                    except (usb.core.USBError, AttributeError):
+                        pass
+                    continue
+                raise
+        raise last_err
 
     def reset(self) -> bool:
         config = SPIConfigRegister()
@@ -60,6 +75,7 @@ class SPIDevice:
         wr_nbytes = len(wr_data)
         padding = (4 - wr_nbytes % 4) % 4
         wr_data += b'\xff' * padding
+        rd_nbytes_aligned = (rd_nbytes + 3) & ~3
 
         config = SPIConfigRegister()
         if wr_nbytes == 0 and rd_nbytes == 0:
@@ -84,11 +100,12 @@ class SPIDevice:
 
         assert(self.set_register_payload(config, wr_data))
         if rd_nbytes:
-            data = self.read_data_raw(config.TransferControlRegister.RdTranCnt + 1)
+            # Some devices return data in 32-bit chunks; read aligned size to avoid overflow.
+            data = self.read_data_raw(max(rd_nbytes_aligned, config.TransferControlRegister.RdTranCnt + 1))
             sr = self.read_register().StatusRegister.value
             # print(f'rd_sr {sr:08X} ({len(data)}): {data.hex()}')
             assert sr == 0x00404000
-            return data
+            return data[:rd_nbytes]
         else:
             sr = self.read_register().StatusRegister.value
             # print(f'wr_sr {sr:08X}')
