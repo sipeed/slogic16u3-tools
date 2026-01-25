@@ -48,7 +48,20 @@ class USBDevice:
         :param timeout: 超时时间（毫秒）
         :return: 实际发送的字节数
         """
-        return self.ep_out.write(data, timeout)
+        last_err = None
+        for _ in range(3):
+            try:
+                return self.ep_out.write(data, timeout)
+            except usb.core.USBError as e:
+                last_err = e
+                if e.errno in (5, 32, 75, 110) and self.ep_out is not None:
+                    try:
+                        self.dev.clear_halt(self.ep_out.bEndpointAddress)
+                    except (usb.core.USBError, AttributeError):
+                        pass
+                    continue
+                raise
+        raise last_err
 
     def read(self, size: int, timeout: int = 1000) -> bytes:
         """
@@ -57,7 +70,36 @@ class USBDevice:
         :param timeout: 超时时间（毫秒）
         :return: 读取到的字节数据
         """
-        return bytes(self.ep_in.read(size, timeout))
+        if self.ep_in is None:
+            return b""
+
+        mps = getattr(self.ep_in, "wMaxPacketSize", 0) or 0
+        aligned = size
+        if mps and (size % mps) != 0:
+            aligned = ((size + mps - 1) // mps) * mps
+
+        last_err = None
+        sizes = [aligned, size]
+        if mps:
+            sizes = [aligned, aligned + mps, aligned + (2 * mps), size]
+        for read_size in sizes:
+            try:
+                data = bytes(self.ep_in.read(read_size, timeout))
+                return data[:size]
+            except usb.core.USBError as e:
+                last_err = e
+                if e.errno == 84 and mps:
+                    # Overflow means the device returned more than our buffer.
+                    continue
+                if e.errno in (5, 32, 75, 110) and self.ep_in is not None:
+                    # Clear a possible stall and retry with a different size.
+                    try:
+                        self.dev.clear_halt(self.ep_in.bEndpointAddress)
+                    except (usb.core.USBError, AttributeError):
+                        pass
+                    continue
+                raise
+        raise last_err
 
     def close(self):
         """释放USB设备资源"""
