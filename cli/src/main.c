@@ -327,8 +327,7 @@ static int slogic16u3_start_acquisition(slogic16u3_context *ctx)
         printf("Config index: %u, Base freq: %u MHz\n", config_index, base_freq_mhz);
 
         if (base_freq % ctx->cur_samplerate != 0) {
-            printf("Error: Cannot achieve samplerate %lu from base %lu\n", 
-                ctx->cur_samplerate, base_freq);
+            printf("Error: Cannot achieve samplerate %llu from base %llu\n", ctx->cur_samplerate, base_freq);
             *(uint16_t*)(cmd_aux + 4) += 1;  // 尝试下一个配置
             ret = slogic_usb_control_write(ctx->dev_handle,
                                         SLOGIC16U3_CONTROL_OUT_REQ_REG_WRITE,
@@ -507,7 +506,7 @@ static void LIBUSB_CALL user_receive_transfer_cb(struct libusb_transfer *transfe
                 double mbps = bytes_this_interval / 1000.0 / 1000.0 * 1000 / (current_time - last_report_time);
                 double valid_mbps = (double)ctx->cur_samplerate / 1000000 * ctx->cur_samplechannel / 8;
                 bool is_valid = mbps <= valid_mbps * 1.01 && mbps >= valid_mbps * 0.99;
-                printf("Received: %lu bytes, Speed: %.2f MB/s(%.2f MB/s) is '%svalid'\n", bytes_received_all, mbps, valid_mbps, is_valid? "" : "in");
+                printf("Received: %llu bytes, Speed: %.2f MB/s(%.2f MB/s) is '%svalid'\n", bytes_received_all, mbps, valid_mbps, is_valid? "" : "in");
                 // hexdump transfer->buffer n x 4(rev) x uint32_t(4bytes)
                 if (ctx->cur_samplechannel == 16) {
                     for (int i = 0; i < transfer->actual_length && i < 64; i += 2) {
@@ -529,7 +528,7 @@ static void LIBUSB_CALL user_receive_transfer_cb(struct libusb_transfer *transfe
                 if (is_valid) {
                     // 构造文件名
                     char filename[64];
-                    snprintf(filename, sizeof(filename), "%uch_%luM_wave.bin", ctx->cur_samplechannel, ctx->cur_samplerate/1000000);
+                    snprintf(filename, sizeof(filename), "%uch_%lluM_wave.bin", ctx->cur_samplechannel, ctx->cur_samplerate/1000000);
                     FILE *fp = fopen(filename, "ab");
                     if (fp) {
                         fwrite(transfer->buffer, 1, transfer->actual_length, fp);
@@ -775,14 +774,14 @@ int main(int argc, char *argv[])
                 break;
             }
             case '?':
-                fprintf(stderr, "未知选项或缺少参数\n");
-                fprintf(stderr, "用法: %s [选项]\n", argv[0]);
-                fprintf(stderr, "选项:\n");
-                fprintf(stderr, "  -s, --sr <MHz>    设置采样率 (单位: MHz)\n");
-                fprintf(stderr, "  -c, --ch <num>    设置通道数\n");
-                fprintf(stderr, "  -v, --volt <mV>   设置电压 (单位: mV)\n");
-                fprintf(stderr, "  -t, --timeout <second>   设置超时 (单位: second)\n");
-                fprintf(stderr, "参数格式支持: -sr 200 或 -sr=200\n");
+                fprintf(stderr, "Unknown option or missing argument\n");
+                fprintf(stderr, "Usage: %s [options]\n", argv[0]);
+                fprintf(stderr, "Options:\n");
+                fprintf(stderr, "  -s, --sr <MHz>           Set sample rate (Unit: MHz)\n");
+                fprintf(stderr, "  -c, --ch <num>           Set number of channels\n");
+                fprintf(stderr, "  -v, --volt <mV>          Set voltage (Unit: mV)\n");
+                fprintf(stderr, "  -t, --timeout <seconds>  Set timeout (Unit: seconds)\n");
+                fprintf(stderr, "Supported parameter formats: -sr 200 or -sr=200\n");
                 return 1;
             default:
                 abort();  // 意外情况
