@@ -1,0 +1,50 @@
+# SLogic16U3 产品档案
+# 新增产品时复制本文件为 <product_id>.toml 并修改各字段，无需改代码。
+schema_version = 1
+
+[product]
+id = "slogic16u3"            # 必须与文件名一致，用于 firmware/blank_flash 目录寻址
+display_name = "SLogic16U3"
+
+[usb]
+vid = 0x359F
+app_pid = 0x3031             # 应用固件运行时的 PID
+ota_pid = 0x30F1             # OTA 模式 PID；未知时删除本行，GUI 会提示 "OTA 未配置"
+
+[capture]
+driver = "sipeed-slogic-analyzer"   # sigrok 驱动名
+num_channels = 16                   # 硬件通道总数（决定数据流 unitsize = ceil(16/8) = 2 字节/样本）
+max_bandwidth_mbps = 400            # 约束: channels × rate / 8 ≤ 此值
+channel_options = [4, 8, 16]
+# sigrok 驱动实际支持的采样率档位（以 sigrok-cli --show 为准）
+samplerates = ["5M", "8M", "10M", "16M", "20M", "25M", "32M", "40M", "50M", "80M", "100M", "160M", "200M"]
+voltage_threshold_v = 1.6
+default_samples = "1M"
+
+# 一键全流程要跑的测试点，可配置多组
+[[capture.tests]]
+channels = 16
+samplerate = "200M"
+samples = "1M"
+
+[expected]
+# 外置固定信号源：10MHz 50% 3.3V TTL，接入全部通道
+freq_hz = 10_000_000
+duty_pct = 50.0
+freq_tol_pct = 5.0           # 频率相对容差 (%)
+duty_tol_pp = 5.0            # 占空比绝对容差（百分点）
+
+[firmware]
+app = "firmware/slogic16u3/app.bin"  # 相对 resources/ 目录；由管理员放置
+app_flash_addr = 0x0                 # 应用固件在 SPI Flash 中的烧写起始地址
+verify = true                        # 烧写后回读校验
+
+[blank_flash]
+dir = "blank_flash/slogic16u3"       # 相对 resources/；目录内须有 manifest.toml
+
+[timeouts]
+wait_ota_device_s = 30
+wait_app_device_s = 30
+ota_flash_s = 600
+capture_s = 120
+blank_flash_step_s = 120

@@ -92,99 +92,79 @@ class SPIFlashDevice:
             self.flash_dev.spi.xfer(b'\x04')  # Write Disable
 
 
-# python spi_flash.py firmware.bin
-if __name__ == "__main__":
-    import sys
+ERASE_BLOCK = 0x10000  # 64KB
+PROGRAM_PAGE_SIZE = 0x20  # 实测稳定值
 
-    if len(sys.argv) < 2:
-        print(f'usage: {sys.argv[0]} <firmware.bin>')
-        sys.exit(1)
 
-    # 直接读取文件（二进制模式）
-    with open(sys.argv[1], 'rb') as f:
-        firmware = f.read()
-        firmware_size = len(firmware)
-    print(f"Read {firmware_size} bytes")
+def flash_firmware(vid: int, pid: int, addr: int, firmware: bytes,
+                   verify: bool = True, dump_file: str | None = None) -> None:
+    """Erase + program + optional verify.  Raises RuntimeError on failure."""
+    if addr % ERASE_BLOCK != 0:
+        raise RuntimeError(f"起始地址 0x{addr:06X} 未按 64KB 对齐")
+    size = len(firmware)
+    if size == 0:
+        raise RuntimeError("固件为空")
 
-    alignment = 0x10000  # 64KB 对齐
-    # padding_size = (alignment - (firmware_size % alignment)) % alignment  # 计算需要填充的长度
-
-    # firmware += bytes([0xFF] * padding_size) # 在末尾补 0xFF
-    # print(f'raw size: {firmware_size}')
-    # firmware_size += padding_size
-    # print(f'paded size: {firmware_size}')
-
-    with SPIFlashDevice(0x359F, 0x30F1) as flash: 
-        # Reset flash
-        assert flash.reset()
-        
-        # Read ID and UID
+    with SPIFlashDevice(vid, pid) as flash:
+        if not flash.reset():
+            raise RuntimeError("SPI flash reset 失败")
         print("ID:", flash.read_id().hex())
         print("UID:", flash.read_uid().hex())
-        print("STATUS:")
-        data = flash.spi.xfer(b'\x05', 1)
-        print(data.hex())
-        data = flash.spi.xfer(b'\x35', 1)
-        print(data.hex())
-        data = flash.spi.xfer(b'\x15', 1)
-        print(data.hex())
-        
-        # Read data
-        data = flash.read_data(0x0, firmware_size)
-        print(f"Dump {len(data)} bytes")
-        open('dump.bin', 'wb').write(data)
 
-        # start = 0x100000
-        start = 0x0
+        if dump_file:
+            data = flash.read_data(addr, size)
+            open(dump_file, 'wb').write(data)
+            print(f"Dumped {len(data)} bytes to {dump_file}")
 
-        print(f"=======================================================================")
-        # Erase
-        for addr in range(start, start+firmware_size, alignment):
-            flash.erase_64kb(addr)
-        data = flash.read_data(start, firmware_size)
-        # print(f"Dump {len(data)} bytes to erased.bin")
-        # open('erased.bin', 'wb').write(data)
-        print(data.count(0xFF) == len(data))
+        for a in range(addr, addr + size, ERASE_BLOCK):
+            flash.erase_64kb(a)
+        erased = flash.read_data(addr, size)
+        if erased.count(0xFF) != len(erased):
+            raise RuntimeError("擦除后校验失败：区域非全 0xFF")
 
-        # data = b''
-        # for addr in range(start, start+firmware_size, alignment):
-        #     tmp = flash.read_data(addr, alignment)
-        #     while tmp.count(0xFF) != len(tmp):
-        #         print(f"Erase 0x{addr:06X}:")
-        #         with flash.we():
-        #             flash.spi.xfer(b'\xD8' + flash._addr_to_bytes(addr))
-        #         tmp = flash.read_data(addr, alignment)
-        #         tmp = flash.read_data(addr, alignment)
-        #     data += tmp
-        # print(f"Read {len(data)} bytes:") #, data.hex())
-        # open('erased.bin', 'wb').write(data)
-        # print(data.count(0xFF) == len(data))
+        flash.page_size = PROGRAM_PAGE_SIZE
+        flash.program(addr, firmware)
+
+        if verify:
+            readback = flash.read_data(addr, size)
+            if readback != firmware:
+                diff = next(i for i in range(size) if readback[i] != firmware[i])
+                raise RuntimeError(f"烧写校验失败：首个差异在 0x{addr+diff:06X}")
+            print("Verify OK")
 
 
-        print(f"=======================================================================")
-        # program
-        flash.page_size = 0x20
-        flash.program(start, firmware)
-        print(f"=======================================================================")
-        print("Check Program Result(True=Pass, False=Fail):")
-        data = flash.read_data(start, firmware_size)
-        # print(f"Dump {len(data)} bytes to rdback.bin")
-        # open('rdback.bin', 'wb').write(data)
-        print(firmware == data)
+def _parse_int(s: str) -> int:
+    return int(s, 0)  # accepts 0x..., decimal
 
-        # flash.page_size = 0x40
-        # data = b''
-        # for addr in range(start, start+firmware_size, flash.page_size):
-        #     page_payload = firmware[addr-start:addr-start+flash.page_size]
-        #     tmp = flash.read_data(addr, flash.page_size)
-        #     while tmp != page_payload:
-        #         print(f"Program Page 0x{addr:06X}:")
-        #         flash.program_page(addr, page_payload)
-        #         # with flash.we():
-        #         #     flash.spi.xfer(b'\x02' + flash._addr_to_bytes(addr) + page_payload)
-        #         tmp = flash.read_data(addr, flash.page_size)
-        #         tmp = flash.read_data(addr, flash.page_size)
-        #     data += tmp
-        # print(f"Read {len(data)} bytes:") #, data.hex())
-        # open('rdback.bin', 'wb').write(data)
-        # print(firmware == data)
+
+def main(argv=None) -> int:
+    import argparse
+    parser = argparse.ArgumentParser(
+        description="通过 OTA 模式 USB-SPI 通道烧写 SPI Flash 固件")
+    parser.add_argument("firmware", help="固件 .bin 文件路径")
+    parser.add_argument("--vid", type=_parse_int, default=0x359F, help="USB VID (默认 0x359F)")
+    parser.add_argument("--pid", type=_parse_int, default=0x30F1, help="USB PID (默认 0x30F1)")
+    parser.add_argument("--addr", type=_parse_int, default=0x0, help="烧写起始地址，须 64KB 对齐 (默认 0x0)")
+    parser.add_argument("--verify", action=argparse.BooleanOptionalAction, default=True,
+                        help="烧写后回读校验 (默认开)")
+    parser.add_argument("--dump", metavar="FILE", default=None, help="烧写前先 dump 原内容到文件")
+    args = parser.parse_args(argv)
+
+    with open(args.firmware, 'rb') as f:
+        firmware = f.read()
+    print(f"Read {len(firmware)} bytes from {args.firmware}")
+
+    try:
+        flash_firmware(args.vid, args.pid, args.addr, firmware,
+                       verify=args.verify, dump_file=args.dump)
+    except (RuntimeError, ValueError, AssertionError) as e:
+        print(f"FAILED: {e}")
+        return 1
+    print("Done")
+    return 0
+
+
+# python spi_flash.py firmware.bin [--vid 0x359F --pid 0x30F1 --addr 0x0]
+if __name__ == "__main__":
+    import sys
+    sys.exit(main())

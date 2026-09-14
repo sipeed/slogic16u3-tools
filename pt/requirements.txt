@@ -1,5 +1,3 @@
 pyqt5
-termcolor
-matplotlib
 numpy
 pyusb

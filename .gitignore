@@ -1,3 +1,8 @@
 **/build
 **/.cache
 __pycache__
+pt/out/
+*_wave.bin
+resources/bin/*
+!resources/bin/.gitkeep
+resources/firmware/*/*.bin

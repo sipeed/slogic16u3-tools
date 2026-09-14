@@ -1,3 +1,5 @@
+> **DEPRECATED**: 采样已迁移至 sigrok-cli（放置方法见 `resources/README.md`），本目录仅作历史参考，不再维护。`show.py` 可用于解析旧 slogic_cli 格式的 .bin 存档（含 4ch 半字节打包格式）。
+
 ```bash
 
 cmake -Bbuild -GNinja -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DCMAKE_BUILD_TYPE=Debug

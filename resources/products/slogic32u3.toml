@@ -1,0 +1,57 @@
+# SLogic32U3 产品档案
+schema_version = 1
+
+[product]
+id = "slogic32u3"
+display_name = "SLogic32U3"
+
+[usb]
+vid = 0x359F
+app_pid = 0x3032
+# ota_pid 待硬件确认后填写（如 0x30F2）。缺省时 GUI 提示 "OTA 未配置" 并禁用 OTA/一键流程。
+
+[capture]
+driver = "sipeed-slogic-analyzer"
+num_channels = 32                   # unitsize = 4 字节/样本
+max_bandwidth_mbps = 800
+channel_options = [8, 16, 32]
+# 首台 32U3 到手后以 sigrok-cli --show 实测列表修正
+samplerates = ["10M", "20M", "25M", "40M", "50M", "80M", "100M", "160M", "200M", "400M", "800M"]
+voltage_threshold_v = 1.6
+default_samples = "1M"
+
+[[capture.tests]]
+channels = 32
+samplerate = "200M"
+samples = "1M"
+
+[[capture.tests]]
+channels = 16
+samplerate = "400M"
+samples = "1M"
+
+[[capture.tests]]
+channels = 8
+samplerate = "800M"
+samples = "1M"
+
+[expected]
+freq_hz = 10_000_000
+duty_pct = 50.0
+freq_tol_pct = 5.0
+duty_tol_pp = 5.0
+
+[firmware]
+app = "firmware/slogic32u3/app.bin"
+app_flash_addr = 0x0                 # TBD：随硬件确认修改
+verify = true
+
+[blank_flash]
+dir = "blank_flash/slogic32u3"
+
+[timeouts]
+wait_ota_device_s = 30
+wait_app_device_s = 30
+ota_flash_s = 600
+capture_s = 120
+blank_flash_step_s = 120

@@ -1,0 +1,25 @@
+# 空板刷机命令清单（SLogic16U3）
+# 管理员将所需脚本/可执行文件与本 manifest 放在同一目录，argv 中的相对路径按本目录解析。
+# 步骤按声明顺序显示为 GUI 单步按钮；in_pipeline = true 的步骤按顺序纳入一键全流程。
+schema_version = 1
+
+[[steps]]
+name = "lock"
+label = "eFuse Lock"
+argv = ["bash", "efuse_lock.sh"]
+timeout_s = 60
+in_pipeline = false
+
+[[steps]]
+name = "flash"
+label = "Gowin Flash (OTA FW)"
+argv = ["bash", "gowin_flash.sh"]
+timeout_s = 300
+in_pipeline = true
+
+[[steps]]
+name = "reset"
+label = "USB Reset"
+argv = ["bash", "usb_rst.sh"]
+timeout_s = 30
+in_pipeline = true
