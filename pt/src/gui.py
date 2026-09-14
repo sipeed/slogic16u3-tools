@@ -14,12 +14,13 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal
+from PyQt5.QtCore import QModelIndex, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import (
-    QApplication, QComboBox, QFileDialog, QGridLayout, QGroupBox,
-    QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox, QPushButton,
-    QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget,
+    QAbstractItemView, QApplication, QComboBox, QFileDialog, QGridLayout,
+    QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox,
+    QPushButton, QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout,
+    QWidget,
 )
 
 import device_watch
@@ -42,7 +43,7 @@ C_FULL = "#5e35b1"     # 一键全流程
 
 def _group_style(color: str) -> str:
     return (f"QGroupBox {{ border: 2px solid {color}; border-radius: 4px;"
-            f" margin-top: 7px; font-weight: bold; }}"
+            f" margin-top: 10px; font-weight: bold; }}"
             f" QGroupBox::title {{ subcontrol-origin: margin; left: 6px;"
             f" padding: 0 3px; color: {color}; }}")
 
@@ -57,6 +58,24 @@ def _compact(layout, spacing: int = 3, margins: tuple = (6, 8, 6, 5)):
     layout.setSpacing(spacing)
     layout.setContentsMargins(*margins)
     return layout
+
+
+class ExpectedTable(QTableWidget):
+    """Edit only on explicit intent: double-click / click-on-selected / F2.
+    A click on the blank area drops the current cell so stray keystrokes
+    can't silently overwrite the last-clicked value."""
+
+    def __init__(self):
+        super().__init__()
+        self.setEditTriggers(QAbstractItemView.DoubleClicked
+                             | QAbstractItemView.SelectedClicked
+                             | QAbstractItemView.EditKeyPressed)
+
+    def mousePressEvent(self, event):
+        if not self.indexAt(event.pos()).isValid():
+            self.clearSelection()
+            self.setCurrentIndex(QModelIndex())
+        super().mousePressEvent(event)
 
 
 class ProductionTestGUI(QWidget):
@@ -232,12 +251,12 @@ class ProductionTestGUI(QWidget):
         self.sampling_btn.clicked.connect(self.run_sampling)
         cap.addWidget(self.sampling_btn, 4, 0, 1, 2)
         cap.addWidget(QLabel("Expected (freq Hz / duty %):"), 5, 0, 1, 2)
-        self.expected_table = QTableWidget()
+        self.expected_table = ExpectedTable()
         self.expected_table.setColumnCount(2)
         self.expected_table.setHorizontalHeaderLabels(["Freq (Hz)", "Duty (%)"])
         self.expected_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.expected_table.verticalHeader().setDefaultSectionSize(19)
-        self.expected_table.verticalHeader().setFixedWidth(28)
+        self.expected_table.verticalHeader().setDefaultSectionSize(24)
+        self.expected_table.verticalHeader().setFixedWidth(34)
         cap.addWidget(self.expected_table, 6, 0, 1, 2)
         test_group.setLayout(cap)
         col.addWidget(test_group, 1)
@@ -555,7 +574,10 @@ class ProductionTestGUI(QWidget):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
+    font = app.font()
+    font.setPointSize(font.pointSize() + 2)
+    app.setFont(font)
     gui = ProductionTestGUI()
-    gui.resize(1180, 700)
+    gui.resize(1280, 760)
     gui.show()
     sys.exit(app.exec_())
