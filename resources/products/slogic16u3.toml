@@ -18,6 +18,13 @@ max_bandwidth_mbps = 400            # 约束: channels × rate / 8 ≤ 此值
 channel_options = [4, 8, 16]
 # sigrok 驱动实际支持的采样率档位（以 sigrok-cli --show 为准）
 samplerates = ["5M", "8M", "10M", "16M", "20M", "25M", "32M", "40M", "50M", "80M", "100M", "160M", "200M"]
+
+# 高采样率需先切换驱动分组（pattern）：键=通道数，值=驱动的 pattern 字符串。
+# 采样时会先下发 pattern 再设采样率。当前 release-1.1.0 驱动未暴露分组值，
+# 驱动支持后取消注释并按 sigrok-cli --show 的实际值填写，同时把高档位补进 samplerates。
+# [capture.patterns]
+# 8 = "max 8ch"     # 8ch 分组 -> 可用 400M
+# 16 = "max 16ch"   # 16ch 分组 -> 最高 200M
 voltage_threshold_v = 1.6
 default_samples = "1M"
 

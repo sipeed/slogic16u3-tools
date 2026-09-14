@@ -291,13 +291,16 @@ class Pipeline:
             self._log(msg)
             self.report_lines.append(f"{label}: FAIL (多设备歧义)")
             return False
+        pattern = self.profile.patterns.get(channels)
+        if pattern:
+            self._log(f"切换分组 pattern={pattern}")
         try:
             result = self.sigrok.capture(
                 driver=self.profile.driver, channels=channels,
                 samplerate_hz=samplerate_hz, samples=samples,
                 voltage_threshold_v=voltage_threshold_v,
                 device_unitsize=self.profile.unitsize, out_file=out_file,
-                timeout_s=self.profile.timeouts.capture_s,
+                timeout_s=self.profile.timeouts.capture_s, pattern=pattern,
                 log_cb=self._log, cancel=self.cancel)
         except CaptureError as e:
             self._log(f"采样失败: {e}")

@@ -17,6 +17,13 @@ max_bandwidth_mbps = 800
 channel_options = [8, 16, 32]
 # 首台 32U3 到手后以 sigrok-cli --show 实测列表修正
 samplerates = ["10M", "20M", "25M", "40M", "50M", "80M", "100M", "160M", "200M", "400M", "800M"]
+
+# 高采样率需先切换驱动分组（pattern）：键=通道数，值=驱动的 pattern 字符串。
+# 当前 release-1.1.0 驱动未暴露分组值，驱动支持后按 --show 实际值填写。
+# [capture.patterns]
+# 8 = "max 8ch"     # -> 800M
+# 16 = "max 16ch"   # -> 400M
+# 32 = "max 32ch"   # -> 200M
 voltage_threshold_v = 1.6
 default_samples = "1M"
 

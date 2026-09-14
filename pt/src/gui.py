@@ -397,7 +397,7 @@ class ProductionTestGUI(QWidget):
         self.ota_file_edit.setPlaceholderText(
             str(p.app_firmware) if p.app_firmware else "档案未配置固件，请手动选择")
         self._on_channels_changed(self.channel_combo.currentText())
-        self._update_enablement()
+        self.refresh_device_status()   # status text is per selected product
 
     def _rebuild_sequence(self, p: ProductProfile):
         while self.seq_container.count():
@@ -456,13 +456,22 @@ class ProductionTestGUI(QWidget):
     # --------------------------------------------------------- device status
 
     def refresh_device_status(self):
+        """Status is about the SELECTED product; other attached SLogic
+        devices are only a secondary hint (they also block sigrok capture
+        until the driver supports device selection)."""
         self.detected = device_watch.scan_devices(self.profiles)
-        if self.detected:
-            self.device_status_label.setText(
-                "设备: " + ", ".join(str(d) for d in self.detected))
+        p = self.profile
+        mine = next((d for d in self.detected
+                     if p is not None and d.profile.id == p.id), None)
+        others = [d for d in self.detected
+                  if p is None or d.profile.id != p.id]
+        others_txt = f"　(另在线: {', '.join(str(d) for d in others)})" if others else ""
+        if mine is not None:
+            self.device_status_label.setText(f"设备: {mine}{others_txt}")
             self.device_status_label.setStyleSheet("color: #2e7d32;")
         else:
-            self.device_status_label.setText("未检测到 SLogic 设备")
+            name = p.display_name if p else "SLogic"
+            self.device_status_label.setText(f"未检测到 {name} 设备{others_txt}")
             self.device_status_label.setStyleSheet("color: #c62828;")
         self._update_enablement()
 

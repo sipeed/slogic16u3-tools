@@ -148,7 +148,7 @@ class SigrokCli:
     def capture(self, *, driver: str, channels: int, samplerate_hz: int,
                 samples: str, voltage_threshold_v: float,
                 device_unitsize: int, out_file: Path, timeout_s: float,
-                conn: str | None = None,
+                conn: str | None = None, pattern: str | None = None,
                 log_cb: Callable[[str], None] | None = None,
                 cancel: threading.Event | None = None) -> CaptureResult:
         out_file = Path(out_file)
@@ -156,10 +156,17 @@ class SigrokCli:
         out_file.unlink(missing_ok=True)
 
         vt = f"{voltage_threshold_v:.1f}"
+        # pattern (channel-group mode) must be set BEFORE samplerate --
+        # higher rates only exist in the reduced-channel groups and the
+        # driver rejects/wraps them otherwise
+        config = ""
+        if pattern:
+            config += f"pattern={pattern}:"
+        config += f"samplerate={format_rate(samplerate_hz)}:voltage_threshold={vt}-{vt}"
         cmd = [
             str(self.binary),
             "-d", f"{driver}:conn={conn}" if conn else driver,
-            "--config", f"samplerate={format_rate(samplerate_hz)}:voltage_threshold={vt}-{vt}",
+            "--config", config,
             "--channels", ",".join(f"D{i}" for i in range(channels)),
             "--samples", samples,
             "-O", "binary",
