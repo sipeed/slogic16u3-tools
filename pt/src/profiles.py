@@ -104,7 +104,6 @@ class ProductProfile:
     max_bandwidth_mbps: int
     channel_options: list[int]
     samplerates_hz: list[int]
-    patterns: dict[int, str]            # channels -> driver pattern (group mode)
     voltage_threshold_v: float
     default_samples: str
     capture_tests: list[CaptureTest]
@@ -196,13 +195,6 @@ def _parse_profile(path: Path) -> tuple[ProductProfile | None, list[Problem]]:
 
         samplerates_hz = sorted(parse_rate(r) for r in capture["samplerates"])
 
-        patterns: dict[int, str] = {}
-        for k, v in capture.get("patterns", {}).items():
-            ch_key = int(k)
-            if ch_key not in channel_options:
-                return err(f"capture.patterns 键 {k} 不在 channel_options 中")
-            patterns[ch_key] = str(v)
-
         tests = []
         for i, t in enumerate(doc["capture"].get("tests", [])):
             ch = int(t["channels"])
@@ -249,7 +241,6 @@ def _parse_profile(path: Path) -> tuple[ProductProfile | None, list[Problem]]:
             max_bandwidth_mbps=max_bw,
             channel_options=channel_options,
             samplerates_hz=samplerates_hz,
-            patterns=patterns,
             voltage_threshold_v=float(capture.get("voltage_threshold_v", 1.6)),
             default_samples=str(capture.get("default_samples", "1M")),
             capture_tests=tests,

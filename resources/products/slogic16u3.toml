@@ -16,15 +16,11 @@ driver = "sipeed-slogic-analyzer"   # sigrok 驱动名
 num_channels = 16                   # 硬件通道总数（决定数据流 unitsize = ceil(16/8) = 2 字节/样本）
 max_bandwidth_mbps = 400            # 约束: channels × rate / 8 ≤ 此值
 channel_options = [4, 8, 16]
-# sigrok 驱动实际支持的采样率档位（以 sigrok-cli --show 为准）
-samplerates = ["5M", "8M", "10M", "16M", "20M", "25M", "32M", "40M", "50M", "80M", "100M", "160M", "200M"]
-
-# 高采样率需先切换驱动分组（pattern）：键=通道数，值=驱动的 pattern 字符串。
-# 采样时会先下发 pattern 再设采样率。当前 release-1.1.0 驱动未暴露分组值，
-# 驱动支持后取消注释并按 sigrok-cli --show 的实际值填写，同时把高档位补进 samplerates。
-# [capture.patterns]
-# 8 = "max 8ch"     # 8ch 分组 -> 可用 400M
-# 16 = "max 16ch"   # 16ch 分组 -> 最高 200M
+# 采样率档位。高档位需要更少通道的分组：采样时工具自动先下发
+# logic_channels=<通道数>（Num of logic channels，切换分组）再设采样率，
+# 数据流宽度随分组变化（unitsize = ceil(通道数/8)）。
+# 带宽约束 channels × rate / 8 ≤ max_bandwidth_mbps 决定各通道数可选的档位。
+samplerates = ["5M", "8M", "10M", "16M", "20M", "25M", "32M", "40M", "50M", "80M", "100M", "160M", "200M", "400M"]
 voltage_threshold_v = 1.6
 default_samples = "1M"
 

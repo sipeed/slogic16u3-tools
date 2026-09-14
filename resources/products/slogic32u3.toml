@@ -15,15 +15,11 @@ driver = "sipeed-slogic-analyzer"
 num_channels = 32                   # unitsize = 4 字节/样本
 max_bandwidth_mbps = 800
 channel_options = [8, 16, 32]
-# 首台 32U3 到手后以 sigrok-cli --show 实测列表修正
+# 采样率档位。高档位需要更少通道的分组：采样时工具自动先下发
+# logic_channels=<通道数>（切换分组）再设采样率：32ch@200M / 16ch@400M / 8ch@800M。
+# 已实测 400M/800M 可解锁（2026-09-14，S/N 202608052052）；注意该机分组模式
+# 数据当时全零（32ch 正常），待固件/驱动排查。
 samplerates = ["10M", "20M", "25M", "40M", "50M", "80M", "100M", "160M", "200M", "400M", "800M"]
-
-# 高采样率需先切换驱动分组（pattern）：键=通道数，值=驱动的 pattern 字符串。
-# 当前 release-1.1.0 驱动未暴露分组值，驱动支持后按 --show 实际值填写。
-# [capture.patterns]
-# 8 = "max 8ch"     # -> 800M
-# 16 = "max 16ch"   # -> 400M
-# 32 = "max 32ch"   # -> 200M
 voltage_threshold_v = 1.6
 default_samples = "1M"
 

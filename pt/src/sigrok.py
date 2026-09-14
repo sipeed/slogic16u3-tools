@@ -4,8 +4,10 @@ Empirical notes (verified against sigrok-cli 0.8.0 SLogic build + SLogic16U3):
 - channel list must be comma-separated (`D0,D1,...`); `D0-D15` range syntax
   is rejected by this driver;
 - `-O binary` output starts with a textual `FRAME-BEGIN\\n` marker;
-- unitsize equals the device's native width (ceil(total_channels/8)) even
-  when fewer channels are enabled;
+- the `logic_channels` config selects the channel-group mode and unlocks
+  the higher samplerates of reduced groups; it must precede `samplerate`.
+  The stream width follows the group: unitsize = ceil(logic_channels/8)
+  (32U3 verified: 32ch->4B/sample @200M, 16ch->2B @400M, 8ch->1B @800M);
 - an unsupported samplerate is silently wrapped by the driver (stderr says
   e.g. "wrap to 200MHz") -- we treat that as a capture failure, otherwise
   frequency verification would use the wrong sample rate.
@@ -147,22 +149,24 @@ class SigrokCli:
 
     def capture(self, *, driver: str, channels: int, samplerate_hz: int,
                 samples: str, voltage_threshold_v: float,
-                device_unitsize: int, out_file: Path, timeout_s: float,
-                conn: str | None = None, pattern: str | None = None,
+                out_file: Path, timeout_s: float,
+                conn: str | None = None,
                 log_cb: Callable[[str], None] | None = None,
                 cancel: threading.Event | None = None) -> CaptureResult:
         out_file = Path(out_file)
         out_file.parent.mkdir(parents=True, exist_ok=True)
         out_file.unlink(missing_ok=True)
 
+        # `logic_channels` selects the channel-group mode and must be set
+        # BEFORE samplerate: higher rates only exist in reduced groups
+        # (e.g. 32U3: 32ch@200M / 16ch@400M / 8ch@800M).  The stream width
+        # follows the group, so unitsize = ceil(group/8) (verified on real
+        # 32U3: 32ch->4B, 16ch->2B, 8ch/4ch->1B per sample).
+        unitsize = (channels + 7) // 8
         vt = f"{voltage_threshold_v:.1f}"
-        # pattern (channel-group mode) must be set BEFORE samplerate --
-        # higher rates only exist in the reduced-channel groups and the
-        # driver rejects/wraps them otherwise
-        config = ""
-        if pattern:
-            config += f"pattern={pattern}:"
-        config += f"samplerate={format_rate(samplerate_hz)}:voltage_threshold={vt}-{vt}"
+        config = (f"logic_channels={channels}"
+                  f":samplerate={format_rate(samplerate_hz)}"
+                  f":voltage_threshold={vt}-{vt}")
         cmd = [
             str(self.binary),
             "-d", f"{driver}:conn={conn}" if conn else driver,
@@ -209,11 +213,11 @@ class SigrokCli:
 
         from waveform import strip_frame_markers
         payload = strip_frame_markers(out_file.read_bytes())
-        n_samples = len(payload) // device_unitsize
+        n_samples = len(payload) // unitsize
         if n_samples == 0:
             raise CaptureError("采样数据不足一个样本")
         return CaptureResult(
-            out_file=out_file, unitsize=device_unitsize,
+            out_file=out_file, unitsize=unitsize,
             num_channels=channels, samplerate_hz=samplerate_hz,
             n_samples=n_samples, elapsed_s=elapsed)
 
@@ -243,7 +247,7 @@ if __name__ == "__main__":
     result = cli.capture(
         driver=profile.driver, channels=16, samplerate_hz=200_000_000,
         samples="1M", voltage_threshold_v=profile.voltage_threshold_v,
-        device_unitsize=profile.unitsize, out_file=out, timeout_s=60,
+        out_file=out, timeout_s=60,
         log_cb=lambda s: print(f"  | {s}"))
     print(f"采样完成: {result.n_samples} samples, {result.elapsed_s:.2f}s, {result.out_file}")
 

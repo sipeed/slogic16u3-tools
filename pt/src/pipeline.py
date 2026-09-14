@@ -291,16 +291,12 @@ class Pipeline:
             self._log(msg)
             self.report_lines.append(f"{label}: FAIL (多设备歧义)")
             return False
-        pattern = self.profile.patterns.get(channels)
-        if pattern:
-            self._log(f"切换分组 pattern={pattern}")
         try:
             result = self.sigrok.capture(
                 driver=self.profile.driver, channels=channels,
                 samplerate_hz=samplerate_hz, samples=samples,
-                voltage_threshold_v=voltage_threshold_v,
-                device_unitsize=self.profile.unitsize, out_file=out_file,
-                timeout_s=self.profile.timeouts.capture_s, pattern=pattern,
+                voltage_threshold_v=voltage_threshold_v, out_file=out_file,
+                timeout_s=self.profile.timeouts.capture_s,
                 log_cb=self._log, cancel=self.cancel)
         except CaptureError as e:
             self._log(f"采样失败: {e}")
@@ -308,7 +304,7 @@ class Pipeline:
             return False
 
         self._log(f"采样完成: {result.n_samples} samples, {result.elapsed_s:.2f}s -> {result.out_file.name}")
-        chans = waveform.load_capture_file(result.out_file, channels, self.profile.unitsize)
+        chans = waveform.load_capture_file(result.out_file, channels, result.unitsize)
         e = self.profile.expected
         if expected_rows is None:
             ok, verdicts = waveform.verify_channels(
