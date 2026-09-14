@@ -129,34 +129,37 @@ class ProductionTestGUI(QWidget):
         self._clear_prompt()
         root.addWidget(self.prompt_label)
 
-        # -- three columns
+        # -- operations as one horizontal row (production order), no tall
+        #    half-empty column; test config + logs share the space below
+        root.addLayout(self._build_ops_row())
         cols = QHBoxLayout()
         cols.setSpacing(6)
-        cols.addLayout(self._build_ops_column(), 2)
         cols.addLayout(self._build_test_column(), 2)
         cols.addLayout(self._build_log_column(), 3)
         root.addLayout(cols, 1)
         self.setLayout(root)
         self._on_product_changed(self.product_combo.currentIndex())
 
-    def _build_ops_column(self) -> QVBoxLayout:
-        col = QVBoxLayout()
-        col.setSpacing(4)
+    def _build_ops_row(self) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.setSpacing(5)
 
         # 1 blank flash (manifest in_pipeline steps)
-        self.blank_group = QGroupBox("① 烧空板 Blank Flash")
+        self.blank_group = QGroupBox("① 烧空板")
         self.blank_group.setStyleSheet(_group_style(C_BLANK))
         self.blank_layout = _compact(QVBoxLayout())
         self.blank_group.setLayout(self.blank_layout)
-        col.addWidget(self.blank_group)
+        row.addWidget(self.blank_group, 1)
 
         # 2 OTA
-        ota_group = QGroupBox("② OTA 应用固件写入")
+        ota_group = QGroupBox("② OTA 固件写入")
         ota_group.setStyleSheet(_group_style(C_OTA))
         ota = _compact(QGridLayout())
         self.ota_file_edit = QLineEdit()
         self.ota_file_edit.setPlaceholderText("默认使用产品档案固件")
-        ota_select = QPushButton("Select…")
+        ota_select = QPushButton("…")
+        ota_select.setFixedWidth(28)
+        ota_select.setToolTip("选择固件文件")
         ota_select.clicked.connect(self.select_ota_file)
         self.ota_btn = QPushButton("② OTA 烧写")
         self.ota_btn.setStyleSheet(_button_style(C_OTA))
@@ -165,17 +168,17 @@ class ProductionTestGUI(QWidget):
         ota.addWidget(ota_select, 0, 1)
         ota.addWidget(self.ota_btn, 1, 0, 1, 2)
         ota_group.setLayout(ota)
-        col.addWidget(ota_group)
+        row.addWidget(ota_group, 1)
 
         # 4 lock (manifest non-pipeline steps, e.g. eFuse lock)
-        self.lock_group = QGroupBox("④ 锁定 Lock")
+        self.lock_group = QGroupBox("④ 锁定")
         self.lock_group.setStyleSheet(_group_style(C_LOCK))
         self.lock_layout = _compact(QVBoxLayout())
         self.lock_group.setLayout(self.lock_layout)
-        col.addWidget(self.lock_group)
+        row.addWidget(self.lock_group, 1)
 
         # 5 re-flash (rework)
-        reflash_group = QGroupBox("⑤ 复烧 Re-flash（返修）")
+        reflash_group = QGroupBox("⑤ 复烧（返修）")
         reflash_group.setStyleSheet(_group_style(C_REFLASH))
         rf = _compact(QVBoxLayout())
         self.reflash_btn = QPushButton("⑤ 进入OTA并复烧")
@@ -183,8 +186,9 @@ class ProductionTestGUI(QWidget):
         self.reflash_btn.setToolTip("等待设备进入 OTA 模式（超时提示人工操作）→ 重写应用固件 → 等待应用模式")
         self.reflash_btn.clicked.connect(self.run_reflash)
         rf.addWidget(self.reflash_btn)
+        rf.addStretch(1)
         reflash_group.setLayout(rf)
-        col.addWidget(reflash_group)
+        row.addWidget(reflash_group, 1)
 
         # full test + cancel
         full_group = QGroupBox("一键全流程 ①→②→③")
@@ -198,15 +202,11 @@ class ProductionTestGUI(QWidget):
         self.cancel_btn = QPushButton("Cancel")
         self.cancel_btn.clicked.connect(self.cancel_pipeline)
         self.cancel_btn.setEnabled(False)
-        self.step_label = QLabel("")
         fl.addWidget(self.full_btn)
         fl.addWidget(self.cancel_btn)
-        fl.addWidget(self.step_label)
         full_group.setLayout(fl)
-        col.addWidget(full_group)
-
-        col.addStretch(1)
-        return col
+        row.addWidget(full_group, 1)
+        return row
 
     def _build_test_column(self) -> QVBoxLayout:
         col = QVBoxLayout()
@@ -255,6 +255,9 @@ class ProductionTestGUI(QWidget):
 
         log_head = QHBoxLayout()
         log_head.addWidget(QLabel("Log:"))
+        self.step_label = QLabel("")
+        self.step_label.setStyleSheet("color:#555;")
+        log_head.addWidget(self.step_label)
         log_head.addStretch(1)
         log_clear = QPushButton("Clear"); log_clear.clicked.connect(lambda: self.log_box.clear())
         log_head.addWidget(log_clear)
