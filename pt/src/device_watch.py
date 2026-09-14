@@ -52,6 +52,19 @@ def find_pid(vid: int, pid: int) -> bool:
         return False
 
 
+def find_conn(vid: int, pid: int) -> str | None:
+    """sigrok `conn=` spec (usb bus.address) for the device, so a capture
+    targets exactly this product when several SLogic devices share one
+    host (sigrok-cli refuses to capture with an ambiguous scan)."""
+    try:
+        dev = usb.core.find(idVendor=vid, idProduct=pid)
+        if dev is None or dev.bus is None or dev.address is None:
+            return None
+        return f"{dev.bus}.{dev.address}"
+    except Exception:
+        return None
+
+
 def wait_for_pid(vid: int, pid: int, timeout_s: float,
                  poll_s: float = 0.5,
                  cancel: threading.Event | None = None) -> bool:

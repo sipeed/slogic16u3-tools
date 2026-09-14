@@ -45,12 +45,30 @@ class PipelineCallbacks:
 
 @dataclass
 class StepDef:
-    name: str
+    id: str                     # stable id, GUI step rows key on this
+    label: str                  # operator-facing name
     run: Callable[[], bool]     # True = passed
+    abort_on_fail: bool = True  # capture steps keep going to aid diagnosis
 
 
 class PipelineAbort(Exception):
     pass
+
+
+def sequence_plan(profile: ProductProfile) -> list[tuple[str, str]]:
+    """(id, label) of the linear production sequence, without a Pipeline
+    instance -- the GUI builds its step list from this so ids always match."""
+    plan: list[tuple[str, str]] = []
+    for s in (profile.blank_flash_steps or []):
+        if s.in_pipeline:
+            plan.append((f"blank:{s.name}", f"烧空板 · {s.label}"))
+    plan.append(("wait_ota", "等待 OTA 设备"))
+    plan.append(("flash_app", "OTA 烧写应用固件"))
+    plan.append(("wait_app", "等待 APP 设备"))
+    for i, t in enumerate(profile.capture_tests):
+        plan.append((f"capture:{i}",
+                     f"采样验证 {t.channels}ch@{format_rate(t.samplerate_hz)}"))
+    return plan
 
 
 class Pipeline:
@@ -66,20 +84,54 @@ class Pipeline:
 
     # ---- construction helpers -------------------------------------------
 
+    def _sequence_defs(self) -> list[StepDef]:
+        defs: list[StepDef] = []
+        for s in (self.profile.blank_flash_steps or []):
+            if s.in_pipeline:
+                defs.append(StepDef(f"blank:{s.name}", f"烧空板 · {s.label}",
+                                    lambda s=s: self._run_blank_step(s)))
+        defs.append(StepDef("wait_ota", "等待 OTA 设备", self._wait_ota))
+        defs.append(StepDef("flash_app", "OTA 烧写应用固件", self._flash_app))
+        defs.append(StepDef("wait_app", "等待 APP 设备", self._wait_app))
+        for i, t in enumerate(self.profile.capture_tests):
+            defs.append(StepDef(
+                f"capture:{i}",
+                f"采样验证 {t.channels}ch@{format_rate(t.samplerate_hz)}",
+                lambda t=t: self._capture_one(
+                    t.channels, t.samplerate_hz, t.samples,
+                    self.profile.voltage_threshold_v, None),
+                abort_on_fail=False))
+        return defs
+
     @classmethod
     def full_test(cls, profile: ProductProfile, sigrok: SigrokCli,
-                  callbacks: PipelineCallbacks) -> "Pipeline":
+                  callbacks: PipelineCallbacks,
+                  firmware_path=None) -> "Pipeline":
         p = cls(profile, sigrok, callbacks, [])
-        steps: list[StepDef] = []
-        for s in (profile.blank_flash_steps or []):
-            if s.in_pipeline:
-                steps.append(StepDef(f"blank:{s.name}",
-                                     lambda s=s: p._run_blank_step(s)))
-        steps.append(StepDef("wait_ota", p._wait_ota))
-        steps.append(StepDef("flash_app", p._flash_app))
-        steps.append(StepDef("wait_app", p._wait_app))
-        steps.append(StepDef("capture", p._capture_all))
-        p.steps = steps
+        p._firmware_override = firmware_path
+        p.steps = p._sequence_defs()
+        return p
+
+    @classmethod
+    def single_step(cls, profile: ProductProfile, sigrok: SigrokCli | None,
+                    callbacks: PipelineCallbacks, step_id: str,
+                    firmware_path=None) -> "Pipeline":
+        """Manual mode: run exactly one sequence step by id."""
+        p = cls(profile, sigrok, callbacks, [])
+        p._firmware_override = firmware_path
+        matches = [d for d in p._sequence_defs() if d.id == step_id]
+        if not matches:
+            raise ValueError(f"未知步骤: {step_id}")
+        p.steps = matches
+        return p
+
+    @classmethod
+    def manifest_step(cls, profile: ProductProfile,
+                      callbacks: PipelineCallbacks, step) -> "Pipeline":
+        """Any manifest step (also non-pipeline ones, e.g. eFuse lock)."""
+        p = cls(profile, None, callbacks, [])
+        p.steps = [StepDef(f"blank:{step.name}", step.label,
+                           lambda: p._run_blank_step(step))]
         return p
 
     @classmethod
@@ -89,18 +141,12 @@ class Pipeline:
                      voltage_threshold_v: float,
                      expected_rows: list[tuple[float, float]] | None = None
                      ) -> "Pipeline":
-        """Single capture+verify (the SAMPLING button), same engine."""
+        """Custom capture+verify with operator-tweaked parameters."""
         p = cls(profile, sigrok, callbacks, [])
-        p.steps = [StepDef("capture", lambda: p._capture_one(
-            channels, samplerate_hz, samples, voltage_threshold_v, expected_rows))]
-        return p
-
-    @classmethod
-    def flash_only(cls, profile: ProductProfile, callbacks: PipelineCallbacks,
-                   firmware_path=None) -> "Pipeline":
-        p = cls(profile, None, callbacks, [])
-        p._firmware_override = firmware_path
-        p.steps = [StepDef("flash_app", p._flash_app)]
+        label = f"自定义采样 {channels}ch@{format_rate(samplerate_hz)}"
+        p.steps = [StepDef("capture:custom", label, lambda: p._capture_one(
+            channels, samplerate_hz, samples, voltage_threshold_v, expected_rows),
+            abort_on_fail=False)]
         return p
 
     @classmethod
@@ -110,9 +156,9 @@ class Pipeline:
         固件 -> 等待应用模式回归。"""
         p = cls(profile, None, callbacks, [])
         p._firmware_override = firmware_path
-        p.steps = [StepDef("wait_ota", p._wait_ota),
-                   StepDef("flash_app", p._flash_app),
-                   StepDef("wait_app", p._wait_app)]
+        p.steps = [StepDef("wait_ota", "等待 OTA 设备", p._wait_ota),
+                   StepDef("flash_app", "OTA 烧写应用固件", p._flash_app),
+                   StepDef("wait_app", "等待 APP 设备", p._wait_app)]
         return p
 
     # ---- lifecycle -------------------------------------------------------
@@ -132,16 +178,16 @@ class Pipeline:
         all_pass = True
         try:
             for step in self.steps:
-                self.cb.on_step(step.name, StepStatus.RUNNING)
+                self.cb.on_step(step.id, StepStatus.RUNNING)
                 if self.cancel.is_set():
                     raise PipelineAbort("已取消")
                 ok = step.run()
-                self.cb.on_step(step.name,
+                self.cb.on_step(step.id,
                                 StepStatus.PASSED if ok else StepStatus.FAILED)
                 if not ok:
                     all_pass = False
-                    if step.name != "capture":   # capture reports per-test detail; others abort
-                        raise PipelineAbort(f"步骤 {step.name} 失败")
+                    if step.abort_on_fail:
+                        raise PipelineAbort(f"步骤「{step.label}」失败")
         except PipelineAbort as e:
             all_pass = False
             self._log(f"流程中止: {e}")
@@ -234,6 +280,17 @@ class Pipeline:
         label = f"{channels}ch@{format_rate(samplerate_hz)}"
         out_file = OUTPUT_DIR / f"{self.profile.id}_{channels}ch_{format_rate(samplerate_hz)}_wave.bin"
         self._log(f"== 采样 {label} ({samples} samples) ==")
+        # sigrok-cli refuses to capture when its scan matches several
+        # devices, and this driver build does not implement the `conn`
+        # selector yet ("Not supported now!") -- so detect the ambiguity
+        # up front and tell the operator exactly what to do.
+        found = self.sigrok.scan(self.profile.driver)
+        if len(found) > 1:
+            msg = ("检测到多台 SLogic 设备同时在线，当前 sigrok 驱动暂不支持指定设备，"
+                   "请只保留被测设备后重试:\n  " + "\n  ".join(found))
+            self._log(msg)
+            self.report_lines.append(f"{label}: FAIL (多设备歧义)")
+            return False
         try:
             result = self.sigrok.capture(
                 driver=self.profile.driver, channels=channels,
@@ -292,9 +349,13 @@ if __name__ == "__main__":
     from profiles import load_profiles
     profile = load_profiles()[0][0]
 
+    print("== 序列计划 ==")
+    for sid, label in sequence_plan(profile):
+        print(f"  {sid}: {label}")
+
     print("== 假步骤成功路径 ==")
     p = Pipeline(profile, None, cb, [
-        StepDef("a", lambda: True), StepDef("b", lambda: True)])
+        StepDef("a", "A", lambda: True), StepDef("b", "B", lambda: True)])
     p.start(); done.wait(5)
     assert results["ok"] is True
 
@@ -302,16 +363,26 @@ if __name__ == "__main__":
     done.clear()
     ran = []
     p = Pipeline(profile, None, cb, [
-        StepDef("a", lambda: (ran.append("a"), True)[1]),
-        StepDef("boom", lambda: False),
-        StepDef("never", lambda: (ran.append("never"), True)[1])])
+        StepDef("a", "A", lambda: (ran.append("a"), True)[1]),
+        StepDef("boom", "Boom", lambda: False),
+        StepDef("never", "Never", lambda: (ran.append("never"), True)[1])])
     p.start(); done.wait(5)
     assert results["ok"] is False and ran == ["a"], ran
+
+    print("== capture 步骤失败不中止后续 capture ==")
+    done.clear()
+    ran2 = []
+    p = Pipeline(profile, None, cb, [
+        StepDef("capture:0", "C0", lambda: False, abort_on_fail=False),
+        StepDef("capture:1", "C1", lambda: (ran2.append("c1"), True)[1],
+                abort_on_fail=False)])
+    p.start(); done.wait(5)
+    assert results["ok"] is False and ran2 == ["c1"], ran2
 
     print("== 取消应立刻结束等待 ==")
     done.clear()
     p2 = Pipeline(profile, None, cb, [])
-    p2.steps = [StepDef("wait", lambda: p2._wait_mode(0x7FFF, 1.0, "OTA"))]
+    p2.steps = [StepDef("wait", "Wait", lambda: p2._wait_mode(0x7FFF, 1.0, "OTA"))]
     threading.Timer(2.5, p2.request_cancel).start()
     t0 = time.time()
     p2.start(); done.wait(15)

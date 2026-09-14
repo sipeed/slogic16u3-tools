@@ -148,6 +148,7 @@ class SigrokCli:
     def capture(self, *, driver: str, channels: int, samplerate_hz: int,
                 samples: str, voltage_threshold_v: float,
                 device_unitsize: int, out_file: Path, timeout_s: float,
+                conn: str | None = None,
                 log_cb: Callable[[str], None] | None = None,
                 cancel: threading.Event | None = None) -> CaptureResult:
         out_file = Path(out_file)
@@ -157,7 +158,7 @@ class SigrokCli:
         vt = f"{voltage_threshold_v:.1f}"
         cmd = [
             str(self.binary),
-            "-d", driver,
+            "-d", f"{driver}:conn={conn}" if conn else driver,
             "--config", f"samplerate={format_rate(samplerate_hz)}:voltage_threshold={vt}-{vt}",
             "--channels", ",".join(f"D{i}" for i in range(channels)),
             "--samples", samples,
