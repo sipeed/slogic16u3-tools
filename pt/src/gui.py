@@ -41,16 +41,22 @@ C_FULL = "#5e35b1"     # 一键全流程
 
 
 def _group_style(color: str) -> str:
-    return (f"QGroupBox {{ border: 2px solid {color}; border-radius: 6px;"
-            f" margin-top: 12px; font-weight: bold; }}"
-            f" QGroupBox::title {{ subcontrol-origin: margin; left: 8px;"
-            f" padding: 0 4px; color: {color}; }}")
+    return (f"QGroupBox {{ border: 2px solid {color}; border-radius: 4px;"
+            f" margin-top: 7px; font-weight: bold; }}"
+            f" QGroupBox::title {{ subcontrol-origin: margin; left: 6px;"
+            f" padding: 0 3px; color: {color}; }}")
 
 
 def _button_style(color: str) -> str:
     return (f"QPushButton {{ background: {color}; color: white;"
-            f" font-weight: bold; padding: 6px 10px; border-radius: 4px; }}"
+            f" font-weight: bold; padding: 3px 8px; border-radius: 3px; }}"
             f" QPushButton:disabled {{ background: #b8b8b8; color: #f0f0f0; }}")
+
+
+def _compact(layout, spacing: int = 3, margins: tuple = (6, 8, 6, 5)):
+    layout.setSpacing(spacing)
+    layout.setContentsMargins(*margins)
+    return layout
 
 
 class ProductionTestGUI(QWidget):
@@ -93,10 +99,13 @@ class ProductionTestGUI(QWidget):
     def init_ui(self):
         self.setWindowTitle("SLogic Production Test")
         root = QVBoxLayout()
+        root.setSpacing(3)
+        root.setContentsMargins(6, 4, 6, 4)
 
         # -- top bar: status | product | warnings chip (fixed, never reflows)
         top = QHBoxLayout()
-        big = QFont(); big.setPointSize(14); big.setBold(True)
+        top.setSpacing(6)
+        big = QFont(); big.setPointSize(12); big.setBold(True)
         self.device_status_label = QLabel("...")
         self.device_status_label.setFont(big)
         top.addWidget(self.device_status_label, 1)
@@ -115,13 +124,14 @@ class ProductionTestGUI(QWidget):
 
         # -- operator prompt strip: fixed height, only style changes
         self.prompt_label = QLabel("")
-        self.prompt_label.setFixedHeight(34)
+        self.prompt_label.setFixedHeight(24)
         self.prompt_label.setAlignment(Qt.AlignCenter)
         self._clear_prompt()
         root.addWidget(self.prompt_label)
 
         # -- three columns
         cols = QHBoxLayout()
+        cols.setSpacing(6)
         cols.addLayout(self._build_ops_column(), 2)
         cols.addLayout(self._build_test_column(), 2)
         cols.addLayout(self._build_log_column(), 3)
@@ -131,18 +141,19 @@ class ProductionTestGUI(QWidget):
 
     def _build_ops_column(self) -> QVBoxLayout:
         col = QVBoxLayout()
+        col.setSpacing(4)
 
         # 1 blank flash (manifest in_pipeline steps)
         self.blank_group = QGroupBox("① 烧空板 Blank Flash")
         self.blank_group.setStyleSheet(_group_style(C_BLANK))
-        self.blank_layout = QVBoxLayout()
+        self.blank_layout = _compact(QVBoxLayout())
         self.blank_group.setLayout(self.blank_layout)
         col.addWidget(self.blank_group)
 
         # 2 OTA
         ota_group = QGroupBox("② OTA 应用固件写入")
         ota_group.setStyleSheet(_group_style(C_OTA))
-        ota = QGridLayout()
+        ota = _compact(QGridLayout())
         self.ota_file_edit = QLineEdit()
         self.ota_file_edit.setPlaceholderText("默认使用产品档案固件")
         ota_select = QPushButton("Select…")
@@ -159,14 +170,14 @@ class ProductionTestGUI(QWidget):
         # 4 lock (manifest non-pipeline steps, e.g. eFuse lock)
         self.lock_group = QGroupBox("④ 锁定 Lock")
         self.lock_group.setStyleSheet(_group_style(C_LOCK))
-        self.lock_layout = QVBoxLayout()
+        self.lock_layout = _compact(QVBoxLayout())
         self.lock_group.setLayout(self.lock_layout)
         col.addWidget(self.lock_group)
 
         # 5 re-flash (rework)
         reflash_group = QGroupBox("⑤ 复烧 Re-flash（返修）")
         reflash_group.setStyleSheet(_group_style(C_REFLASH))
-        rf = QVBoxLayout()
+        rf = _compact(QVBoxLayout())
         self.reflash_btn = QPushButton("⑤ 进入OTA并复烧")
         self.reflash_btn.setStyleSheet(_button_style(C_REFLASH))
         self.reflash_btn.setToolTip("等待设备进入 OTA 模式（超时提示人工操作）→ 重写应用固件 → 等待应用模式")
@@ -178,9 +189,9 @@ class ProductionTestGUI(QWidget):
         # full test + cancel
         full_group = QGroupBox("一键全流程 ①→②→③")
         full_group.setStyleSheet(_group_style(C_FULL))
-        fl = QVBoxLayout()
+        fl = _compact(QVBoxLayout())
         self.full_btn = QPushButton("FULL TEST")
-        full_font = QFont(); full_font.setPointSize(13); full_font.setBold(True)
+        full_font = QFont(); full_font.setPointSize(12); full_font.setBold(True)
         self.full_btn.setFont(full_font)
         self.full_btn.setStyleSheet(_button_style(C_FULL))
         self.full_btn.clicked.connect(self.run_full_test)
@@ -199,9 +210,10 @@ class ProductionTestGUI(QWidget):
 
     def _build_test_column(self) -> QVBoxLayout:
         col = QVBoxLayout()
+        col.setSpacing(4)
         test_group = QGroupBox("③ 采样测试 Capture && Verify")
         test_group.setStyleSheet(_group_style(C_TEST))
-        cap = QGridLayout()
+        cap = _compact(QGridLayout())
         cap.addWidget(QLabel("Channels:"), 0, 0)
         self.channel_combo = QComboBox()
         self.channel_combo.currentTextChanged.connect(self._on_channels_changed)
@@ -222,8 +234,10 @@ class ProductionTestGUI(QWidget):
         cap.addWidget(QLabel("Expected (freq Hz / duty %):"), 5, 0, 1, 2)
         self.expected_table = QTableWidget()
         self.expected_table.setColumnCount(2)
-        self.expected_table.setHorizontalHeaderLabels(["Expected Freq (Hz)", "Expected Duty (%)"])
+        self.expected_table.setHorizontalHeaderLabels(["Freq (Hz)", "Duty (%)"])
         self.expected_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.expected_table.verticalHeader().setDefaultSectionSize(19)
+        self.expected_table.verticalHeader().setFixedWidth(28)
         cap.addWidget(self.expected_table, 6, 0, 1, 2)
         test_group.setLayout(cap)
         col.addWidget(test_group, 1)
@@ -231,11 +245,12 @@ class ProductionTestGUI(QWidget):
 
     def _build_log_column(self) -> QVBoxLayout:
         col = QVBoxLayout()
+        col.setSpacing(3)
         self.verdict_label = QLabel("")
-        vfont = QFont(); vfont.setPointSize(48); vfont.setBold(True)
+        vfont = QFont(); vfont.setPointSize(36); vfont.setBold(True)
         self.verdict_label.setFont(vfont)
         self.verdict_label.setAlignment(Qt.AlignCenter)
-        self.verdict_label.setFixedHeight(90)
+        self.verdict_label.setFixedHeight(60)
         col.addWidget(self.verdict_label)
 
         log_head = QHBoxLayout()
@@ -538,6 +553,6 @@ class ProductionTestGUI(QWidget):
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     gui = ProductionTestGUI()
-    gui.resize(1380, 800)
+    gui.resize(1180, 700)
     gui.show()
     sys.exit(app.exec_())
