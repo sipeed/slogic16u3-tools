@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import sys
 import time
+from collections import Counter
 from pathlib import Path
 
 from PyQt5.QtCore import QModelIndex, Qt, QTimer, pyqtSignal
@@ -463,9 +464,21 @@ class ProductionTestGUI(QWidget):
         p = self.profile
         mine = next((d for d in self.detected
                      if p is not None and d.profile.id == p.id), None)
-        others = [d for d in self.detected
-                  if p is None or d.profile.id != p.id]
-        others_txt = f"　(另在线: {', '.join(str(d) for d in others)})" if others else ""
+        # the DFU/OTA pid is shared across products, so one physical DFU
+        # device matches several profiles -- list it once, and name it
+        # "SLogic DFU" when the product can't be told apart
+        shared_ota = {k for k, n in Counter(
+            (q.vid, q.ota_pid) for q in self.profiles
+            if q.ota_pid is not None).items() if n > 1}
+        mine_key = (mine.profile.vid, mine.pid) if mine else None
+        others, seen = [], set()
+        for d in self.detected:
+            key = (d.profile.vid, d.pid)
+            if (p is not None and d.profile.id == p.id) or key == mine_key or key in seen:
+                continue
+            seen.add(key)
+            others.append("SLogic DFU (OTA)" if key in shared_ota else str(d))
+        others_txt = f"　(另在线: {', '.join(others)})" if others else ""
         if mine is not None:
             self.device_status_label.setText(f"设备: {mine}{others_txt}")
             self.device_status_label.setStyleSheet("color: #2e7d32;")

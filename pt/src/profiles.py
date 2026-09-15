@@ -294,16 +294,22 @@ def load_profiles(products_dir: Path = PRODUCTS_DIR) -> tuple[list[ProductProfil
         problems.extend(probs)
         if profile is not None:
             profiles.append(profile)
-    # duplicate (vid, pid) detection across profiles
-    seen: dict[tuple[int, int], str] = {}
+    # app_pid must be unique (it identifies the product); ota_pid MAY be
+    # shared across products -- DFU mode ("SLogic DFU", 0x30F1) is
+    # product-agnostic by design
+    app_seen: dict[tuple[int, int], str] = {}
+    ota_pids = {(p.vid, p.ota_pid): p.id for p in profiles if p.ota_pid is not None}
     for p in profiles:
-        for pid in filter(None, (p.app_pid, p.ota_pid)):
-            key = (p.vid, pid)
-            if key in seen:
-                problems.append(Problem(
-                    "error", p.id,
-                    f"VID/PID {key[0]:#06x}:{key[1]:#06x} 与产品 {seen[key]} 冲突"))
-            seen[key] = p.id
+        key = (p.vid, p.app_pid)
+        if key in app_seen:
+            problems.append(Problem(
+                "error", p.id,
+                f"app VID/PID {key[0]:#06x}:{key[1]:#06x} 与产品 {app_seen[key]} 冲突"))
+        app_seen[key] = p.id
+        if key in ota_pids:
+            problems.append(Problem(
+                "error", p.id,
+                f"app VID/PID {key[0]:#06x}:{key[1]:#06x} 与产品 {ota_pids[key]} 的 ota_pid 冲突"))
     return profiles, problems
 
 

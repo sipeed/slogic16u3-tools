@@ -8,7 +8,7 @@ display_name = "SLogic32U3"
 [usb]
 vid = 0x359F
 app_pid = 0x3032
-# ota_pid 待硬件确认后填写（如 0x30F2）。缺省时 GUI 提示 "OTA 未配置" 并禁用 OTA/一键流程。
+ota_pid = 0x30F1   # "SLogic DFU"，与 16U3 共用（DFU 模式不区分产品型号，dmesg 实测确认）
 
 [capture]
 driver = "sipeed-slogic-analyzer"

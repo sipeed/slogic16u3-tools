@@ -9,7 +9,7 @@ display_name = "SLogic16U3"
 [usb]
 vid = 0x359F
 app_pid = 0x3031             # 应用固件运行时的 PID
-ota_pid = 0x30F1             # OTA 模式 PID；未知时删除本行，GUI 会提示 "OTA 未配置"
+ota_pid = 0x30F1             # "SLogic DFU"，各产品共用（DFU 不区分型号）；未知时删除本行，GUI 提示 "OTA 未配置"
 
 [capture]
 driver = "sipeed-slogic-analyzer"   # sigrok 驱动名

@@ -1,0 +1,31 @@
+# 空板刷机命令清单（SLogic32U3）
+# 脚本/工具由负责同事放入本目录（见仓库根 TODO.md），argv 相对路径按本目录解析。
+# argv 为通用命令；argv_linux / argv_windows / argv_darwin 对应平台优先。
+# 烧录可用 openFPGALoader（跨平台）替代 Gowin programmer；eFuse Lock 仍需 Gowin 工具。
+schema_version = 1
+
+[[steps]]
+name = "flash"
+label = "Gowin Flash (OTA FW)"
+argv = ["bash", "gowin_flash.sh"]
+argv_windows = ["cmd", "/c", "gowin_flash.bat"]
+# openFPGALoader 替代示例:
+# argv = ["./openFPGALoader-linux-x86_64", "--external-flash", "ota.fs"]
+timeout_s = 300
+in_pipeline = true
+
+[[steps]]
+name = "reset"
+label = "USB Reset"
+argv = ["bash", "usb_rst.sh"]
+argv_windows = ["cmd", "/c", "usb_rst.bat"]
+timeout_s = 30
+in_pipeline = true
+
+[[steps]]
+name = "lock"
+label = "eFuse Lock"
+argv = ["bash", "efuse_lock.sh"]
+argv_windows = ["cmd", "/c", "efuse_lock.bat"]
+timeout_s = 60
+in_pipeline = false
