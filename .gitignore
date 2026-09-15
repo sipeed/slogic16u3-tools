@@ -12,5 +12,10 @@ resources/bin/*
 resources/firmware/*/*.bin
 resources/blank_flash/*/efuse_lock.*
 resources/blank_flash/*/gowin_flash.*
+resources/blank_flash/*/gowin_switch.*
 resources/blank_flash/*/*.fs
 resources/blank_flash/*/*.bin
+
+# 内部协议规范（参考用，勿入库/公开）
+USB LA 协议规范.tar.gz
+USB LA 协议规范/

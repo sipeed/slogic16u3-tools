@@ -526,7 +526,7 @@ class ProductionTestGUI(QWidget):
                 ok = self.sigrok is not None
             elif sid in ("flash_app",):
                 ok = p.ota_pid is not None and fw_ok
-            elif sid == "wait_ota":
+            elif sid in ("wait_ota", "switch_app"):
                 ok = p.ota_pid is not None
             else:
                 ok = True

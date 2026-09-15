@@ -74,6 +74,25 @@ class BlankFlashStep:
 
 
 @dataclass(frozen=True)
+class ModeSwitch:
+    """OTA<->APP 模式切换方式。
+    - "manual":      工具不自动切换；切换步骤仅提示，由工人手动操作，随后等待目标
+                     模式设备出现。
+    - "script":      工具运行脚本切换（如 16U3 外置 JTAG + gowin_cli），工具会向
+                     argv 追加方向参数 "ota2app" / "app2ota"。脚本未放置时自动回退
+                     为人工提示（即"外置 JTAG 或工人手动"）。
+    - "usb_reconfig": 工具用 USB 控制传输 RECONFIG（见"USB LA 协议规范"0x30）触发
+                     FPGA 重配置，双向自动切换（如 32U3）。
+    """
+    method: str                      # "manual" | "script" | "usb_reconfig"
+    argv: list[str] | None = None    # script 方式命令（工具追加 ota2app/app2ota）
+    timeout_s: float = 60
+
+
+MODE_SWITCH_METHODS = ("manual", "script", "usb_reconfig")
+
+
+@dataclass(frozen=True)
 class ExpectedSignal:
     freq_hz: float
     duty_pct: float
@@ -122,6 +141,7 @@ class ProductProfile:
     app_firmware: Path | None           # resolved absolute path (may not exist yet)
     app_flash_addr: int
     verify_after_flash: bool
+    mode_switch: ModeSwitch             # OTA<->APP 切换方式
     blank_flash_dir: Path
     blank_flash_steps: list[BlankFlashStep] | None   # None -> manifest missing/bad
     timeouts: Timeouts
@@ -244,6 +264,22 @@ def _parse_profile(path: Path) -> tuple[ProductProfile | None, list[Problem]]:
         app_rel = firmware.get("app")
         app_firmware = (RESOURCES_DIR / app_rel).resolve() if app_rel else None
 
+        ms_raw = doc.get("mode_switch", {})
+        ms_method = str(ms_raw.get("method", "manual"))
+        if ms_method not in MODE_SWITCH_METHODS:
+            return err(f"mode_switch.method={ms_method!r} 无效，应为 {MODE_SWITCH_METHODS}")
+        ms_argv = None
+        if ms_method == "script":
+            # 平台专用命令 argv_linux / argv_windows / argv_darwin 优先于通用 argv
+            argv_raw = ms_raw.get(f"argv_{PLATFORM_KEY}", ms_raw.get("argv"))
+            if argv_raw is None:
+                # 脚本未声明 → 回退为人工提示（"外置 JTAG 或工人手动"）
+                ms_method = "manual"
+            else:
+                ms_argv = [str(a) for a in argv_raw]
+        mode_switch = ModeSwitch(method=ms_method, argv=ms_argv,
+                                 timeout_s=float(ms_raw.get("timeout_s", 60)))
+
         bf_rel = doc.get("blank_flash", {}).get("dir", f"blank_flash/{prod_id}")
         blank_flash_dir = (RESOURCES_DIR / bf_rel).resolve()
         steps, manifest_errors = load_manifest(blank_flash_dir)
@@ -284,6 +320,7 @@ def _parse_profile(path: Path) -> tuple[ProductProfile | None, list[Problem]]:
             app_firmware=app_firmware,
             app_flash_addr=int(firmware.get("app_flash_addr", 0)),
             verify_after_flash=bool(firmware.get("verify", True)),
+            mode_switch=mode_switch,
             blank_flash_dir=blank_flash_dir,
             blank_flash_steps=steps,
             timeouts=timeouts,
@@ -369,6 +406,9 @@ if __name__ == "__main__":
         print(f"  期望: {p.expected.freq_hz/1e6:g}MHz ±{p.expected.freq_tol_pct}%, "
               f"{p.expected.duty_pct}% ±{p.expected.duty_tol_pp}pp")
         print(f"  固件: {p.app_firmware} @ {p.app_flash_addr:#x}")
+        ms = p.mode_switch
+        ms_extra = f"  argv={ms.argv}" if ms.method == "script" else ""
+        print(f"  模式切换: {ms.method}{ms_extra}")
         print(f"  空板步骤: {[s.name for s in p.blank_flash_steps] if p.blank_flash_steps else '无 manifest'}")
     print(f"\n== {len(problems)} 个问题 ==")
     for prob in problems:

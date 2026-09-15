@@ -28,9 +28,16 @@ ln -sf /path/to/sigrok-cli-SLogic-linux-x86_64-musl.AppImage resources/bin/sigro
 # 应用固件
 cp firmware_v1.2.3.bin resources/firmware/slogic16u3/app.bin
 
-# 空板刷机脚本（原 /home/sipeed007/gowin/scripts/ 下三个脚本）
-cp efuse_lock.sh gowin_flash.sh usb_rst.sh resources/blank_flash/slogic16u3/
+# 空板刷机脚本（原 /home/sipeed007/gowin/scripts/ 下的 gowin_flash / efuse_lock）
+cp gowin_flash.sh efuse_lock.sh resources/blank_flash/slogic16u3/
 ```
+
+> OTA<->APP 模式切换不在此列：它由产品档案 `[mode_switch]` 声明，`method` 三选一：
+> - `script`：工具运行切换脚本并自动追加方向参数 `ota2app`/`app2ota`（16U3 =
+>   外置 JTAG + gowin_cli，脚本放 `blank_flash/<id>/`，缺失时自动回退人工提示，
+>   即"外置 JTAG 或工人手动"）；
+> - `usb_reconfig`：工具经 USB 控制传输 RECONFIG 自动双向切换，无需脚本（32U3）；
+> - `manual`：工具只提示工人，随后等待目标模式设备出现。
 
 ## 保密边界（重要）
 

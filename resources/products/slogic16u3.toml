@@ -44,6 +44,16 @@ app = "firmware/slogic16u3/app.bin"  # 相对 resources/ 目录；由管理员�
 app_flash_addr = 0x0                 # 应用固件在 SPI Flash 中的烧写起始地址
 verify = true                        # 烧写后回读校验
 
+[mode_switch]
+# OTA<->APP 切换方式。16U3 走外置 JTAG + gowin_cli 重配置（双向）。
+# method = "script"：工具运行切换脚本并自动追加方向参数 ota2app / app2ota；
+#   脚本（工厂放置，见保密边界）缺失时自动回退为人工提示，即"外置 JTAG 或工人手动"。
+# 相对路径按 blank_flash 目录解析；平台专用可写 argv_windows。
+method = "script"
+argv = ["bash", "gowin_switch.sh"]
+argv_windows = ["cmd", "/c", "gowin_switch.bat"]
+timeout_s = 60
+
 [blank_flash]
 dir = "blank_flash/slogic16u3"       # 相对 resources/；目录内须有 manifest.toml
 

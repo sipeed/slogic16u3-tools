@@ -53,6 +53,11 @@ app = "firmware/slogic32u3/app.bin"
 app_flash_addr = 0x0                 # TBD：随硬件确认修改
 verify = true
 
+[mode_switch]
+# 32U3 支持 USB 控制传输 RECONFIG（协议规范 0x30 设备管理扩展）自动双向切换
+# OTA<->APP：wValue=1 触发、wIndex=0x5253。工具在切换步骤直接下发，无需人工。
+method = "usb_reconfig"
+
 [blank_flash]
 dir = "blank_flash/slogic32u3"
 

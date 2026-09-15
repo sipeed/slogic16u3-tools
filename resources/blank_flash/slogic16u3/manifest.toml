@@ -21,13 +21,9 @@ argv_windows = ["cmd", "/c", "gowin_flash.bat"]
 timeout_s = 300
 in_pipeline = true
 
-[[steps]]
-name = "reset"
-label = "USB Reset"
-argv = ["bash", "usb_rst.sh"]
-argv_windows = ["cmd", "/c", "usb_rst.bat"]
-timeout_s = 30
-in_pipeline = true
+# 注：OTA<->APP 模式切换不再是空板刷机步骤——它属于烧完 app.bin 之后的独立环节，
+# 由产品档案 [mode_switch] 声明（16U3=manual：外置 JTAG + gowin_cli 人工切换；
+# 32U3=usb_reconfig：USB 控制传输 RECONFIG 自动切换）。原 "USB Reset" 步骤已移除。
 
 [[steps]]
 name = "lock"

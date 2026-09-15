@@ -20,8 +20,9 @@ from typing import Callable
 from . import blank_flash as blank_flash_mod
 from . import device_watch
 from . import flasher
+from . import mode_switch as mode_switch_mod
 from . import waveform
-from .profiles import OUTPUT_DIR, ProductProfile, format_rate
+from .profiles import BlankFlashStep, OUTPUT_DIR, ProductProfile, format_rate
 from .sigrok import CaptureError, SigrokCli
 
 
@@ -64,6 +65,7 @@ def sequence_plan(profile: ProductProfile) -> list[tuple[str, str]]:
             plan.append((f"blank:{s.name}", f"烧空板 · {s.label}"))
     plan.append(("wait_ota", "等待 OTA 设备"))
     plan.append(("flash_app", "OTA 烧写应用固件"))
+    plan.append(("switch_app", "切换到 APP 模式"))
     plan.append(("wait_app", "等待 APP 设备"))
     for i, t in enumerate(profile.capture_tests):
         plan.append((f"capture:{i}",
@@ -92,6 +94,7 @@ class Pipeline:
                                     lambda s=s: self._run_blank_step(s)))
         defs.append(StepDef("wait_ota", "等待 OTA 设备", self._wait_ota))
         defs.append(StepDef("flash_app", "OTA 烧写应用固件", self._flash_app))
+        defs.append(StepDef("switch_app", "切换到 APP 模式", self._switch_to_app))
         defs.append(StepDef("wait_app", "等待 APP 设备", self._wait_app))
         for i, t in enumerate(self.profile.capture_tests):
             defs.append(StepDef(
@@ -152,12 +155,14 @@ class Pipeline:
     @classmethod
     def reflash(cls, profile: ProductProfile, callbacks: PipelineCallbacks,
                 firmware_path=None) -> "Pipeline":
-        """返修复烧：等待设备进入 OTA 模式（超时提示人工操作）-> 重写应用
-        固件 -> 等待应用模式回归。"""
+        """返修复烧：（若设备在 APP 模式则）切回 OTA -> 等待 OTA 设备（超时提示
+        人工操作）-> 重写应用固件 -> 切换到 APP -> 等待应用模式回归。"""
         p = cls(profile, None, callbacks, [])
         p._firmware_override = firmware_path
-        p.steps = [StepDef("wait_ota", "等待 OTA 设备", p._wait_ota),
+        p.steps = [StepDef("switch_ota", "切换到 OTA 模式", p._switch_to_ota),
+                   StepDef("wait_ota", "等待 OTA 设备", p._wait_ota),
                    StepDef("flash_app", "OTA 烧写应用固件", p._flash_app),
+                   StepDef("switch_app", "切换到 APP 模式", p._switch_to_app),
                    StepDef("wait_app", "等待 APP 设备", p._wait_app)]
         return p
 
@@ -231,6 +236,49 @@ class Pipeline:
             return False
         finally:
             self.cb.on_user_prompt_clear()
+
+    def _switch_to_app(self) -> bool:
+        """OTA->APP：向 OTA 设备触发切换（真正就绪由随后的 wait_app 判定）。"""
+        if self.profile.ota_pid is None:
+            self._log("ota_pid 未配置，无法切换到 APP")
+            return False
+        return self._switch(from_pid=self.profile.ota_pid, to_what="APP")
+
+    def _switch_to_ota(self) -> bool:
+        """APP->OTA（复烧前置）：若设备当前在 APP 模式则触发切回 OTA；否则跳过，
+        交由 wait_ota 处理（人工插拔/上电）。"""
+        if device_watch.find_pid(self.profile.vid, self.profile.app_pid):
+            return self._switch(from_pid=self.profile.app_pid, to_what="OTA")
+        self._log("未检测到 APP 设备，跳过自动切换，直接等待 OTA")
+        return True
+
+    def _switch(self, from_pid: int, to_what: str) -> bool:
+        ms = self.profile.mode_switch
+        if ms.method == "usb_reconfig":
+            # 32U3：USB 控制传输 RECONFIG 自动双向切换
+            self._log(f"发送 RECONFIG 切换到 {to_what} 模式 "
+                      f"（{self.profile.vid:#06x}:{from_pid:#06x}）...")
+            try:
+                mode_switch_mod.reconfig(self.profile.vid, from_pid, self._log)
+                return True
+            except mode_switch_mod.ModeSwitchError as e:
+                self._log(f"切换到 {to_what} 失败: {e}")
+                return False
+        if ms.method == "script":
+            # 16U3：外置 JTAG + gowin_cli 脚本，追加方向参数 ota2app / app2ota
+            direction = "ota2app" if to_what == "APP" else "app2ota"
+            step = BlankFlashStep(
+                name=f"switch_{direction}", label=f"切换到 {to_what}",
+                argv=list(ms.argv) + [direction], timeout_s=ms.timeout_s,
+                in_pipeline=True)
+            self._log(f"运行外置 JTAG 脚本切换到 {to_what} 模式...")
+            return blank_flash_mod.run_step(
+                step, self.profile.blank_flash_dir, self._log, self.cancel)
+        # method == "manual"：工具不自动切换，仅提示，真正的模式就绪由随后的
+        # 等待步骤（含超时人工提示）确认。
+        self._log(f"{self.profile.display_name}: 需人工切换到 {to_what} 模式"
+                  "（外置 JTAG + gowin_cli），随后自动等待设备就绪")
+        return True
 
     def _wait_ota(self) -> bool:
         if self.profile.ota_pid is None:
