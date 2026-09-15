@@ -390,7 +390,7 @@ class ProductionTestGUI(QWidget):
         self.channel_combo.blockSignals(True)
         self.channel_combo.clear()
         self.channel_combo.addItems([str(c) for c in p.channel_options])
-        self.channel_combo.setCurrentText(str(p.channel_options[-1]))
+        self.channel_combo.setCurrentText(str(p.default_channels))
         self.channel_combo.blockSignals(False)
         self.samples_edit.setText(p.default_samples)
         self.volt_edit.setText(f"{p.voltage_threshold_v:g}")
@@ -398,6 +398,10 @@ class ProductionTestGUI(QWidget):
         self.ota_file_edit.setPlaceholderText(
             str(p.app_firmware) if p.app_firmware else "档案未配置固件，请手动选择")
         self._on_channels_changed(self.channel_combo.currentText())
+        # profile-declared default rate for the default channel count
+        default_rate = format_rate(p.default_samplerate_hz)
+        if self.rate_combo.findText(default_rate) >= 0:
+            self.rate_combo.setCurrentText(default_rate)
         self.refresh_device_status()   # status text is per selected product
 
     def _rebuild_sequence(self, p: ProductProfile):

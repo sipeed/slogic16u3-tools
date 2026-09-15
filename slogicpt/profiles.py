@@ -115,6 +115,8 @@ class ProductProfile:
     samplerates_hz: list[int]
     voltage_threshold_v: float
     default_samples: str
+    default_channels: int
+    default_samplerate_hz: int
     capture_tests: list[CaptureTest]
     expected: ExpectedSignal
     app_firmware: Path | None           # resolved absolute path (may not exist yet)
@@ -210,6 +212,18 @@ def _parse_profile(path: Path) -> tuple[ProductProfile | None, list[Problem]]:
 
         samplerates_hz = sorted(parse_rate(r) for r in capture["samplerates"])
 
+        default_channels = int(capture.get("default_channels", channel_options[-1]))
+        if default_channels not in channel_options:
+            return err(f"default_channels={default_channels} 不在 channel_options 中")
+        limit = int(capture["max_bandwidth_mbps"]) * 1_000_000
+        legal_defaults = [r for r in samplerates_hz
+                          if default_channels * r // 8 <= limit]
+        default_samplerate_hz = parse_rate(
+            capture.get("default_samplerate", legal_defaults[-1] if legal_defaults else samplerates_hz[0]))
+        if default_samplerate_hz not in legal_defaults:
+            return err(f"default_samplerate={capture.get('default_samplerate')} "
+                       f"对 {default_channels}ch 不合法（不在档位或超带宽）")
+
         tests = []
         for i, t in enumerate(doc["capture"].get("tests", [])):
             ch = int(t["channels"])
@@ -258,6 +272,8 @@ def _parse_profile(path: Path) -> tuple[ProductProfile | None, list[Problem]]:
             samplerates_hz=samplerates_hz,
             voltage_threshold_v=float(capture.get("voltage_threshold_v", 1.6)),
             default_samples=str(capture.get("default_samples", "1M")),
+            default_channels=default_channels,
+            default_samplerate_hz=default_samplerate_hz,
             capture_tests=tests,
             expected=ExpectedSignal(
                 freq_hz=float(expected["freq_hz"]),

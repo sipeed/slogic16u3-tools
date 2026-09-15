@@ -23,6 +23,8 @@ channel_options = [8, 16, 32]
 samplerates = ["10M", "20M", "25M", "40M", "50M", "80M", "100M", "160M", "200M", "400M", "800M"]
 voltage_threshold_v = 1.6
 default_samples = "1M"
+default_channels = 32        # GUI 默认选择
+default_samplerate = "200M"
 
 [[capture.tests]]
 channels = 32
