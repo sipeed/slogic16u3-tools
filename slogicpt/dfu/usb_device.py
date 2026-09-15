@@ -1,3 +1,5 @@
+import time
+
 import usb.core
 import usb.util
 
@@ -17,12 +19,26 @@ class USBDevice:
             if backend is None:
                 raise ValueError("未找到libusb1后端，请确保已安装libusb1")
 
+        self.interface_num = interface_num
+
+        # 上一次会话若异常中断，DFU 端点会残留未读响应/处于 stall：
+        # 下一笔 bulk 写报 [Errno 5]，下一笔读按精确长度收包报 [Errno 75] Overflow。
+        # 实测唯一可靠的复位手段是 dev.reset() + 重枚举，clear_halt/排空都不足以清干净。
+        # 因此每次建链前先做一次全设备复位（幂等、无害），复位后端点行为完全正常。
+        dev = usb.core.find(idVendor=vid, idProduct=pid)
+        if dev is None:
+            raise ValueError("设备未找到，请检查VID/PID或连接状态")
+        try:
+            dev.reset()  # 复位后设备重枚举；某些内核会抛 "No such device" 但已生效
+        except usb.core.USBError:
+            pass
+        usb.util.dispose_resources(dev)
+        time.sleep(2.0)  # 等待重枚举完成
+
         self.dev = usb.core.find(idVendor=vid, idProduct=pid)
         if self.dev is None:
+            raise ValueError("复位后未找到设备，请检查连接状态")
 
-            raise ValueError("设备未找到，请检查VID/PID或连接状态")
-
-        self.interface_num = interface_num
         usb.util.claim_interface(self.dev, interface_num)
 
         # 自动探测输入输出端点
@@ -57,7 +73,13 @@ class USBDevice:
         :param timeout: 超时时间（毫秒）
         :return: 读取到的字节数据
         """
-        return bytes(self.ep_in.read(size, timeout))
+        # 批量 IN 端点上，若申请长度不是 wMaxPacketSize 的整数倍，设备发来一个
+        # 满包就会触发 [Errno 75] Overflow。按整包倍数申请缓冲再截取实际长度，
+        # 是 libusb 上规避该问题的标准做法。
+        mps = self.ep_in.wMaxPacketSize
+        buf_size = ((size + mps - 1) // mps) * mps
+        data = bytes(self.ep_in.read(buf_size, timeout))
+        return data[:size]
 
     def close(self):
         """释放USB设备资源"""

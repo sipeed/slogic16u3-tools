@@ -48,6 +48,16 @@ class SPIDevice:
         self.usb.write(packet.serialize(), self.timeout)
         return self.usb.read(nbytes, self.timeout)
 
+    def _assert_idle(self) -> None:
+        """校验桥接器完成一次传输后处于可继续状态：
+        SPIActive=0（无进行中的传输）且 RXEMPTY=1（RX FIFO 已空——残留会让后续
+        读取错位并最终 Overflow）。StatusRegister 本身不含错误位（溢出/欠载等错误在
+        InterruptStatusRegister），TX FIFO 占用计数是瞬时值：36 字节页写入时 TX FIFO
+        尚未排空即被采样属正常，故不作错误判据（旧代码硬比 0x00404000 会误判失败）。"""
+        st = self.read_register().StatusRegister
+        assert st.SPIActive == 0 and st.RXEMPTY == 1, \
+            f"SPI 桥接器状态异常: 0x{st.value:08X}"
+
     def reset(self) -> bool:
         config = SPIConfigRegister()
         config.TransferControlRegister.TransMode = 0x7 # No data
@@ -85,12 +95,8 @@ class SPIDevice:
         assert(self.set_register_payload(config, wr_data))
         if rd_nbytes:
             data = self.read_data_raw(config.TransferControlRegister.RdTranCnt + 1)
-            sr = self.read_register().StatusRegister.value
-            # print(f'rd_sr {sr:08X} ({len(data)}): {data.hex()}')
-            assert sr == 0x00404000
+            self._assert_idle()
             return data
         else:
-            sr = self.read_register().StatusRegister.value
-            # print(f'wr_sr {sr:08X}')
-            assert sr == 0x00404000
+            self._assert_idle()
             return b''

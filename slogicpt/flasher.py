@@ -55,13 +55,38 @@ def flash_app_firmware(*, vid: int, pid: int, addr: int, firmware: Path,
     out = _LogBridge(log_cb) if log_cb else io.StringIO()
     try:
         with contextlib.redirect_stdout(out):
-            flash_firmware(vid, pid, addr, data, verify=verify)
+            try:
+                flash_firmware(vid, pid, addr, data, verify=verify)
+            except Exception as first:
+                # a stalled/stuck DFU device fails the very first bulk
+                # transfer with EIO -- reset the device once and retry
+                import usb.core
+                if not isinstance(first, usb.core.USBError):
+                    raise
+                print(f"USB 传输失败（{first}），复位设备后重试一次…")
+                _usb_reset(vid, pid)
+                flash_firmware(vid, pid, addr, data, verify=verify)
     except FlashError:
         raise
     except Exception as e:  # usb.core errors, RuntimeError, assertion...
         raise FlashError(f"OTA 烧写失败: {e}") from e
     finally:
         out.flush()
+
+
+def _usb_reset(vid: int, pid: int, settle_s: float = 2.0) -> None:
+    import time
+    import usb.core
+    import usb.util
+    dev = usb.core.find(idVendor=vid, idProduct=pid)
+    if dev is None:
+        raise FlashError("复位后未找到设备")
+    try:
+        dev.reset()   # 常见现象：抛 "Entity not found" 但设备已实际重枚举
+    except usb.core.USBError:
+        pass
+    usb.util.dispose_resources(dev)
+    time.sleep(settle_s)
 
 
 if __name__ == "__main__":

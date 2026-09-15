@@ -25,14 +25,18 @@ class SPIFlashDevice:
         """Read unique ID (16 bytes)"""
         return self.spi.xfer(b'\x4B', 16, 4)
         
+    # USB-SPI 桥每次 CMD_READ_DATA 只能返回单个批量包（≤64B）；请求 65B 起即
+    # [Errno 75] Overflow 并卡死端点。故回读按 64B 分块。
+    READ_CHUNK = 0x40
+
     def read_data(self, addr, length):
         """Read data from specified address"""
         data = b''
         got = 0
         while got < length:
             need = length - got
-            if need > 0x50:
-                need = 0x50
+            if need > self.READ_CHUNK:
+                need = self.READ_CHUNK
             data += self.spi.xfer(b'\x0B' + self._addr_to_bytes(addr+got), need, 1)
             got += need
         assert(len(data) == got)
@@ -49,25 +53,32 @@ class SPIFlashDevice:
             print(f'erase 64KB 0x{addr:06X}...')
             self.spi.xfer(b'\xD8' + self._addr_to_bytes(addr))
         
+    # 桥接器单次 SPI 写事务上限为 16 字节（PP 指令 0x02 + 3 字节地址 + ≤12 字节数据）；
+    # 超过则数据根本不发出、TX FIFO 卡死、总线挂起（SR1 恒读 0xff）。故每次页编程最多
+    # 写 12 字节，且不得跨 256 字节页边界（PP 在页内回卷，跨界会写错地址）。
+    WRITE_CHUNK = 0x0C  # 12
+
     def program_page(self, addr, payload):
-        """Program a page at specified address with given payload"""
+        """写入一段 ≤12 字节且不跨 256 页边界的数据（单次 PP 事务）"""
         with self.we():
             self.spi.xfer(b'\x02' + self._addr_to_bytes(addr) + payload)
 
     def program(self, addr, payload):
         length = len(payload)
         programed = 0
+        last_pct = -1
         while programed < length:
-            need = length - programed
-            if need > self.page_size:
-                need = self.page_size
+            a = addr + programed
+            room = 0x100 - (a & 0xFF)          # 到下一个 256 页边界的剩余字节
+            need = min(self.WRITE_CHUNK, room, length - programed)
             data = payload[programed: programed+need]
-            if data.count(0xFF) != len(data):
-                print(f'[{100.0*programed/length:.2f}%]program 0x{addr+programed:06X}...')
-                self.program_page(addr+programed, data)
-            else:
-                print(f'skip 0x{addr+programed:06X}...')
+            if data.count(0xFF) != need:       # 全 0xFF 段跳过（擦除后本就是 0xFF）
+                self.program_page(a, data)
             programed += need
+            pct = int(100.0 * programed / length)
+            if pct != last_pct:
+                print(f'[{pct}%]program 0x{addr:06X}+0x{programed:X}...')
+                last_pct = pct
         assert(length == programed)
         
     def _addr_to_bytes(self, addr):
@@ -79,21 +90,36 @@ class SPIFlashDevice:
         ])
         
     class _WriteEnableManager:
+        WIP_TIMEOUT_S = 5.0  # 页写 <1ms、64KB 擦除 ~数百 ms，5s 足够且能兜住通信异常
+
         def __init__(self, flash_dev):
             self.flash_dev = flash_dev
-            
+
         def __enter__(self):
             self.flash_dev.spi.xfer(b'\x06')  # Write Enable
             return self
-            
+
         def __exit__(self, exc_type, exc_val, exc_tb):
-            while 0x1 & self.flash_dev.spi.xfer(b'\x05', 1)[0]:  # Status Register-1 S0:WIP
-                continue
+            # 已在异常中就不再等待/覆盖原异常，尽力发一次 WRDI 即退出
+            if exc_type is not None:
+                self.flash_dev.spi.xfer(b'\x04')
+                return
+            # 轮询 WIP 直到写完成。旧代码无超时保护：通信异常时 SR1 恒读 0xff
+            #（bit0=1）会死循环——这正是之前"卡住不动"的根因。
+            import time
+            t0 = time.time()
+            while True:
+                sr = self.flash_dev.spi.xfer(b'\x05', 1)[0]  # Status Register-1
+                if sr == 0xFF:
+                    raise RuntimeError("Flash 通信异常：SR1 恒读 0xFF（总线挂起）")
+                if not (sr & 0x1):  # S0:WIP=0，写入完成
+                    break
+                if time.time() - t0 > self.WIP_TIMEOUT_S:
+                    raise RuntimeError("Flash 写等待超时：WIP 未在预期内清零")
             self.flash_dev.spi.xfer(b'\x04')  # Write Disable
 
 
 ERASE_BLOCK = 0x10000  # 64KB
-PROGRAM_PAGE_SIZE = 0x20  # 实测稳定值
 
 
 def flash_firmware(vid: int, pid: int, addr: int, firmware: bytes,
@@ -108,7 +134,16 @@ def flash_firmware(vid: int, pid: int, addr: int, firmware: bytes,
     with SPIFlashDevice(vid, pid) as flash:
         if not flash.reset():
             raise RuntimeError("SPI flash reset 失败")
-        print("ID:", flash.read_id().hex())
+        # 读 ID 确认 flash 可用：上次会话中途中断可能让 flash 停在坏状态，
+        # 首次读 ID 返回 0xffffff/0x000000，此时重试一次 reset 再读；仍无响应则明确报错，
+        # 绝不在坏状态上进入擦除/编程（否则又会触发 WIP 死等/写不进）。
+        dev_id = flash.read_id().hex()
+        if dev_id in ('ffffff', '000000'):
+            flash.reset()
+            dev_id = flash.read_id().hex()
+            if dev_id in ('ffffff', '000000'):
+                raise RuntimeError(f"Flash 无响应（ID={dev_id}），请检查 OTA 连接后重试")
+        print("ID:", dev_id)
         print("UID:", flash.read_uid().hex())
 
         if dump_file:
@@ -122,7 +157,6 @@ def flash_firmware(vid: int, pid: int, addr: int, firmware: bytes,
         if erased.count(0xFF) != len(erased):
             raise RuntimeError("擦除后校验失败：区域非全 0xFF")
 
-        flash.page_size = PROGRAM_PAGE_SIZE
         flash.program(addr, firmware)
 
         if verify:
