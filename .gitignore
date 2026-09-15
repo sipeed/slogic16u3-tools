@@ -7,4 +7,10 @@ dist/
 *.spec
 resources/bin/*
 !resources/bin/.gitkeep
+
+# 固件与工厂产测专用资源：只在工位本地放置，禁止入库/公开
 resources/firmware/*/*.bin
+resources/blank_flash/*/efuse_lock.*
+resources/blank_flash/*/gowin_flash.*
+resources/blank_flash/*/*.fs
+resources/blank_flash/*/*.bin

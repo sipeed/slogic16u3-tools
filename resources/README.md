@@ -32,6 +32,18 @@ cp firmware_v1.2.3.bin resources/firmware/slogic16u3/app.bin
 cp efuse_lock.sh gowin_flash.sh usb_rst.sh resources/blank_flash/slogic16u3/
 ```
 
+## 保密边界（重要）
+
+本仓库是公开仓库，以下内容**仅限工厂产测工位本地放置，禁止提交入库或以任何形式公开**
+（.gitignore 已强制忽略）：
+
+- `blank_flash/<id>/efuse_lock.sh|.bat` — eFuse 锁定脚本
+- `blank_flash/<id>/gowin_flash.sh|.bat` — Gowin 烧录脚本
+- `blank_flash/<id>/*.fs`、`*.bin` — OTA 位流等烧录资源
+- `firmware/<id>/app.bin` — 应用固件（是否公开发布由固件团队另行决定）
+
+`manifest.toml` 只声明步骤与命令行接口（不含实现），可以公开。
+
 ## 启动警告 → 解决办法对照
 
 GUI 顶栏"⚠ 警告"角标里的每一条都对应一个待放置/待确认项，补齐后重启即消：
