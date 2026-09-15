@@ -32,6 +32,41 @@ cp firmware_v1.2.3.bin resources/firmware/slogic16u3/app.bin
 cp efuse_lock.sh gowin_flash.sh usb_rst.sh resources/blank_flash/slogic16u3/
 ```
 
+## 启动警告 → 解决办法对照
+
+GUI 顶栏"⚠ 警告"角标里的每一条都对应一个待放置/待确认项，补齐后重启即消：
+
+| 警告 | 解决办法 |
+|---|---|
+| `usb.ota_pid 未配置` | 硬件确认该产品 OTA 模式 PID 后填入 `products/<id>.toml` 的 `[usb] ota_pid` |
+| `应用固件缺失: .../app.bin` | 把应用固件放到 `firmware/<id>/app.bin` |
+| `blank_flash manifest 缺失` | 在 `blank_flash/<id>/` 创建 `manifest.toml`（可复制 slogic16u3 的模板） |
+| `步骤 'xxx' 引用的文件缺失` | 把 manifest argv 引用的脚本/工具放入同目录（如从产线机 `/home/sipeed007/gowin/scripts/` 迁入） |
+| `未找到 sigrok-cli 二进制` | 按平台命名放入 `bin/`（见上文） |
+
+## 跨平台（Linux / Windows）
+
+- manifest 每个步骤的 `argv` 为通用命令；提供 `argv_linux` / `argv_windows` /
+  `argv_darwin` 时对应平台优先使用，因此同一份资源包可同时服务两种产线工位：
+  Linux 放 `.sh`，Windows 放 `.bat`/`.exe`，互不干扰；
+- 烧录（flash）一步可用 **openFPGALoader**（开源、跨平台、支持 Gowin）替代
+  Gowin programmer——把对应平台的可执行文件与 OTA 位流一起放进
+  `blank_flash/<id>/`，随资源包整体分发；**eFuse Lock 无开源替代**，仍需
+  Gowin 官方工具（Linux/Windows 均有 CLI），由工位环境提供；
+- Windows 工位需 libusb 环境（WinUSB 驱动/Zadig 与 `libusb-1.0.dll`），与
+  旧产测环境要求一致。
+
+## 打包分发
+
+`python pt/build.py`（PyInstaller）产出单二进制，与本 `resources/` 目录平级摆放：
+
+```
+SLogicPT/
+├── slogic-pt-linux-x86_64        # 或 slogic-pt-windows-x86_64.exe
+├── resources/                    # 本目录整体拷贝，管理员随时可改，无需重新打包
+└── out/                          # 运行时自动生成（采样数据）
+```
+
 ## 产品档案要点
 
 - `usb.ota_pid` 未知时可先不写，GUI 会提示 "OTA 未配置" 并禁用 OTA 与一键流程，其余功能不受影响；

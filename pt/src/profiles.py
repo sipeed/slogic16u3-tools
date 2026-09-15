@@ -7,6 +7,7 @@ file plus firmware/blank-flash resources -- no code changes.
 """
 from __future__ import annotations
 
+import platform as platform_mod
 import re
 import sys
 import tomllib
@@ -14,10 +15,19 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+if getattr(sys, "frozen", False):
+    # PyInstaller single binary: resources/ sits NEXT TO the executable
+    # (admin-editable), never inside the bundle
+    REPO_ROOT = Path(sys.executable).resolve().parent
+    OUTPUT_DIR = REPO_ROOT / "out"
+else:
+    REPO_ROOT = Path(__file__).resolve().parents[2]
+    OUTPUT_DIR = REPO_ROOT / "pt" / "out"
 RESOURCES_DIR = REPO_ROOT / "resources"
 PRODUCTS_DIR = RESOURCES_DIR / "products"
-OUTPUT_DIR = REPO_ROOT / "pt" / "out"
+
+PLATFORM_KEY = {"Linux": "linux", "Windows": "windows", "Darwin": "darwin"}.get(
+    platform_mod.system(), "linux")
 
 SCHEMA_VERSION = 1
 
@@ -139,7 +149,13 @@ def load_manifest(manifest_dir: Path) -> tuple[list[BlankFlashStep] | None, list
     steps: list[BlankFlashStep] = []
     for i, raw in enumerate(doc.get("steps", [])):
         try:
-            argv = [str(a) for a in raw["argv"]]
+            # per-platform command: argv_linux / argv_windows / argv_darwin
+            # override the generic argv on that platform
+            argv_raw = raw.get(f"argv_{PLATFORM_KEY}", raw.get("argv"))
+            if argv_raw is None:
+                raise ValueError(
+                    f"缺少 argv（或本平台的 argv_{PLATFORM_KEY}）")
+            argv = [str(a) for a in argv_raw]
             if not argv:
                 raise ValueError("argv 为空")
             steps.append(BlankFlashStep(

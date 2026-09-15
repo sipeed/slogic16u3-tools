@@ -6,3 +6,5 @@ pt/out/
 resources/bin/*
 !resources/bin/.gitkeep
 resources/firmware/*/*.bin
+pt/dist/
+*.spec
