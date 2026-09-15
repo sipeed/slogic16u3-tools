@@ -1,23 +1,13 @@
-"""OTA firmware flashing, wrapping the reusable classes in ota/src.
-
-ota/src modules use flat imports (``from usb_device import ...``) so that
-PyInstaller packaging (ota/src/build.py) keeps working; we therefore extend
-sys.path instead of converting them into a package.
-"""
+"""OTA/DFU firmware flashing, wrapping the slogicpt.dfu library."""
 from __future__ import annotations
 
 import contextlib
 import io
-import sys
 import threading
 from pathlib import Path
 from typing import Callable
 
-from profiles import REPO_ROOT
-
-OTA_SRC = REPO_ROOT / "ota" / "src"
-if str(OTA_SRC) not in sys.path:
-    sys.path.insert(0, str(OTA_SRC))
+from .dfu.spi_flash import flash_firmware
 
 
 class FlashError(Exception):
@@ -25,7 +15,7 @@ class FlashError(Exception):
 
 
 class _LogBridge(io.TextIOBase):
-    """Redirect ota/src print() progress into a line callback."""
+    """Redirect dfu print() progress into a line callback."""
 
     def __init__(self, log_cb: Callable[[str], None]):
         self._log_cb = log_cb
@@ -53,8 +43,6 @@ def flash_app_firmware(*, vid: int, pid: int, addr: int, firmware: Path,
 
     Raises FlashError with a readable message on any failure.
     """
-    from spi_flash import flash_firmware  # ota/src, imported lazily
-
     firmware = Path(firmware)
     if not firmware.is_file():
         raise FlashError(f"固件文件不存在: {firmware}")
@@ -77,7 +65,7 @@ def flash_app_firmware(*, vid: int, pid: int, addr: int, firmware: Path,
 
 
 if __name__ == "__main__":
-    # smoke test: imports resolve, help text of underlying CLI still works
-    from spi_flash import SPIFlashDevice, flash_firmware  # noqa: F401
-    print("flasher: ota/src imports OK")
-    print(f"用法示例: flash_app_firmware(vid=0x359F, pid=0x30F1, addr=0x0, firmware=Path('app.bin'))")
+    # smoke test: imports resolve (run as python -m slogicpt.flasher)
+    from .dfu.spi_flash import SPIFlashDevice  # noqa: F401
+    print("flasher: dfu imports OK")
+    print("用法示例: flash_app_firmware(vid=0x359F, pid=0x30F1, addr=0x0, firmware=Path('app.bin'))")

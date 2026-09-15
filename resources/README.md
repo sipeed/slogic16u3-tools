@@ -58,7 +58,7 @@ GUI 顶栏"⚠ 警告"角标里的每一条都对应一个待放置/待确认项
 
 ## 打包分发
 
-`python pt/build.py`（PyInstaller）产出单二进制，与本 `resources/` 目录平级摆放：
+`python build.py`（PyInstaller）产出单二进制，与本 `resources/` 目录平级摆放：
 
 ```
 SLogicPT/

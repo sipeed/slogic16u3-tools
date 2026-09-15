@@ -1,5 +1,5 @@
-from usb_device import USBDevice
-from spi_device import SPIDevice
+from .usb_device import USBDevice
+from .spi_device import SPIDevice
 
 class SPIFlashDevice:
     def __init__(self, vid, pid):

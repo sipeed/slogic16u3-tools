@@ -32,15 +32,15 @@ from PyQt5.QtWidgets import (
     QTabWidget, QTextEdit, QVBoxLayout, QWidget,
 )
 
-import device_watch
-import pipeline as pipeline_mod
-from device_watch import Mode
-from pipeline import StepStatus, sequence_plan
-from profiles import (
+from . import device_watch
+from . import pipeline as pipeline_mod
+from .device_watch import Mode
+from .pipeline import StepStatus, sequence_plan
+from .profiles import (
     OUTPUT_DIR, ProductProfile, check_resources, format_rate,
     load_profiles, parse_rate,
 )
-from sigrok import SigrokCli, find_sigrok_binary
+from .sigrok import SigrokCli, find_sigrok_binary
 
 ACCENT = "#1565c0"
 
@@ -699,7 +699,7 @@ class ProductionTestGUI(QWidget):
             self.tabs.setCurrentIndex(2)
 
 
-if __name__ == "__main__":
+def main() -> None:
     app = QApplication(sys.argv)
     font = app.font()
     font.setPointSize(font.pointSize() + 2)
@@ -708,3 +708,7 @@ if __name__ == "__main__":
     gui.resize(1280, 780)
     gui.show()
     sys.exit(app.exec_())
+
+
+if __name__ == "__main__":
+    main()

@@ -1,10 +1,10 @@
 **/build
 **/.cache
 __pycache__
-pt/out/
+out/
 *_wave.bin
+dist/
+*.spec
 resources/bin/*
 !resources/bin/.gitkeep
 resources/firmware/*/*.bin
-pt/dist/
-*.spec

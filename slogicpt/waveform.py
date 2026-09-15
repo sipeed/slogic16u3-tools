@@ -8,7 +8,8 @@ still yields 2 bytes/sample).  The stream may carry textual
 `FRAME-BEGIN\\n` / `FRAME-END\\n` markers which must be stripped.
 
 The legacy slogic_cli 4-channel nibble-packed format is NOT supported
-here (slogic_cli is deprecated); use cli/show.py for old archives.
+here (slogic_cli was removed; its sources live in git history if an old
+archive ever needs parsing).
 """
 from __future__ import annotations
 
@@ -142,7 +143,7 @@ def _selftest() -> int:
     return failures
 
 
-REGRESSION_FILE = Path(__file__).resolve().parents[1] / "out" / "16ch_200M_wave.bin"
+REGRESSION_FILE = Path(__file__).resolve().parents[1] / "out" / "16ch_200M_wave.bin"  # optional local capture
 
 if __name__ == "__main__":
     import sys

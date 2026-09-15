@@ -1,6 +1,6 @@
-from usb_device import USBDevice
-from spi_config import SPIConfigRegister
-from spi_data_packet import SPIPacket
+from .usb_device import USBDevice
+from .spi_config import SPIConfigRegister
+from .spi_data_packet import SPIPacket
 
 class SPIDevice:
     def __init__(self, usb_dev: USBDevice, timeout: int = 1000):

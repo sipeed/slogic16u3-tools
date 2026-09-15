@@ -12,8 +12,8 @@ import time
 from pathlib import Path
 from typing import Callable
 
-from profiles import BlankFlashStep
-from sigrok import _popen_kwargs, watchdog
+from .profiles import BlankFlashStep
+from .sigrok import _popen_kwargs, watchdog
 
 
 def run_step(step: BlankFlashStep, workdir: Path,
@@ -49,7 +49,7 @@ def run_step(step: BlankFlashStep, workdir: Path,
 if __name__ == "__main__":
     # self-test with a fake manifest (echo + sleep + failing step)
     import tempfile
-    from profiles import load_manifest
+    from .profiles import load_manifest
 
     with tempfile.TemporaryDirectory() as td:
         d = Path(td)

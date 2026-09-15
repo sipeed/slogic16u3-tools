@@ -17,12 +17,12 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Callable
 
-import blank_flash as blank_flash_mod
-import device_watch
-import flasher
-import waveform
-from profiles import OUTPUT_DIR, ProductProfile, format_rate
-from sigrok import CaptureError, SigrokCli
+from . import blank_flash as blank_flash_mod
+from . import device_watch
+from . import flasher
+from . import waveform
+from .profiles import OUTPUT_DIR, ProductProfile, format_rate
+from .sigrok import CaptureError, SigrokCli
 
 
 class StepStatus(Enum):
@@ -345,7 +345,7 @@ if __name__ == "__main__":
         on_user_prompt=lambda s: print(f"  PROMPT: {s}"),
         on_finished=finished)
 
-    from profiles import load_profiles
+    from .profiles import load_profiles
     profile = load_profiles()[0][0]
 
     print("== 序列计划 ==")

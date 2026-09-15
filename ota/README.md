@@ -1,2 +1,0 @@
-usage: python spi_flash.py firmware.bin
-version: 263be9a0e4572ef74bb2bdc589655c5c9aba1bae

@@ -19,10 +19,9 @@ if getattr(sys, "frozen", False):
     # PyInstaller single binary: resources/ sits NEXT TO the executable
     # (admin-editable), never inside the bundle
     REPO_ROOT = Path(sys.executable).resolve().parent
-    OUTPUT_DIR = REPO_ROOT / "out"
 else:
-    REPO_ROOT = Path(__file__).resolve().parents[2]
-    OUTPUT_DIR = REPO_ROOT / "pt" / "out"
+    REPO_ROOT = Path(__file__).resolve().parents[1]
+OUTPUT_DIR = REPO_ROOT / "out"
 RESOURCES_DIR = REPO_ROOT / "resources"
 PRODUCTS_DIR = RESOURCES_DIR / "products"
 

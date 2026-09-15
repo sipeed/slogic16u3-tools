@@ -12,7 +12,7 @@ from enum import Enum
 
 import usb.core
 
-from profiles import ProductProfile
+from .profiles import ProductProfile
 
 
 class Mode(Enum):
@@ -81,7 +81,7 @@ def wait_for_pid(vid: int, pid: int, timeout_s: float,
 
 
 if __name__ == "__main__":
-    from profiles import load_profiles
+    from .profiles import load_profiles
     profiles, _ = load_profiles()
     print("Ctrl+C 退出；插拔设备观察状态变化")
     last = None

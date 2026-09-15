@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from profiles import RESOURCES_DIR, format_rate
+from .profiles import RESOURCES_DIR, format_rate
 
 _PLATFORM_BINARIES = {
     ("Linux", "x86_64"): "sigrok-cli-linux-x86_64",
@@ -211,7 +211,7 @@ class SigrokCli:
         if not out_file.is_file() or out_file.stat().st_size == 0:
             raise CaptureError(f"未产生采样数据文件: {out_file}")
 
-        from waveform import strip_frame_markers
+        from .waveform import strip_frame_markers
         payload = strip_frame_markers(out_file.read_bytes())
         n_samples = len(payload) // unitsize
         if n_samples == 0:
@@ -224,7 +224,7 @@ class SigrokCli:
 
 if __name__ == "__main__":
     import sys
-    from profiles import OUTPUT_DIR, load_profiles
+    from .profiles import OUTPUT_DIR, load_profiles
 
     binary = find_sigrok_binary()
     if binary is None:
@@ -251,7 +251,7 @@ if __name__ == "__main__":
         log_cb=lambda s: print(f"  | {s}"))
     print(f"采样完成: {result.n_samples} samples, {result.elapsed_s:.2f}s, {result.out_file}")
 
-    from waveform import load_capture_file, verify_channels
+    from .waveform import load_capture_file, verify_channels
     chans = load_capture_file(result.out_file, result.num_channels, result.unitsize)
     e = profile.expected
     ok, verdicts = verify_channels(chans, result.samplerate_hz, e.freq_hz,
