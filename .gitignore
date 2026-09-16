@@ -15,6 +15,9 @@ resources/blank_flash/*/gowin_flash.*
 resources/blank_flash/*/gowin_switch.*
 resources/blank_flash/*/*.fs
 resources/blank_flash/*/*.bin
+# eFuse AES 密钥（机密，绝不入库）
+resources/blank_flash/*/*.ekey
+resources/blank_flash/*/efuse_key.txt
 
 # 内部协议规范（参考用，勿入库/公开）
 USB LA 协议规范.tar.gz
