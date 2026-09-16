@@ -59,9 +59,10 @@ cable_candidates = [4, 1, 5]   # 按顺序试，首个读到器件的即用；32
 timeout_s = 30
 
 [programmer.flash]             # 空板烧写；缺省 → 无烧空板能力
-image = "firmware/dfu.fs"      # 相对产品目录；32U3 = "firmware/dfu.bin"
-# run 由扩展名自动推导：.fs → 54（Arora V 位流），.bin → 56（C Bin）；如需可加 run = 覆盖
-spiaddr = 0x800000             # 外部 SPI Flash 8M 偏移（16U3/32U3 相同）
+image = "firmware/dfu.fs"      # 相对产品目录；32U3 = "firmware/dfu.bin"（.fs/.bin 位流皆可）
+# run 默认 54 = exFlash Erase,Program,Verify Arora V（--fsFile 通吃 .fs 与 .bin 位流）。
+# 切勿用 55/56：那是 RISC-V 软核固件的 "C Bin"，烧 FPGA 位流会写 0 字节、Verify 失败。
+spiaddr = 0x800000             # 外部 SPI Flash 8M 偏移（golden image 槽，16U3/32U3 相同）
 
 [programmer.efuse]             # eFuse AES 密钥；缺省 → 烧空板无 eFuse 前置步骤
 key_file = "firmware/efuse.ekey"

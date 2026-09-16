@@ -41,9 +41,13 @@ class ProbeResult:
 _FAIL_MARKERS = ("cable failed", "no valid jtag", "id code mismatch",
                  "error:", "unable to open", "not found")
 
+# 写操作失败判据：Gowin 可能 rc=0 且末尾照样打 "Finished."（实测 32U3 烧录失败
+# 输出 "Error: Program and Verify Flash Failed!\n Finished."），所以任何 Error:/
+# Failed! 行都视为失败，不能只认结尾。
 _WRITE_FAIL_MARKERS = ("cable failed", "no valid jtag", "id code mismatch",
                        "unable to open", "verify error", "verify failed",
-                       "erase error", "program error", "user cancel", "timeout")
+                       "erase error", "program error", "user cancel", "timeout",
+                       "error:", "failed!")
 
 
 def _device_online(out: str) -> bool:
@@ -167,7 +171,8 @@ def flash(prog: Programmer, cable_index: int | None = None,
         log_cb("[flash] 未找到可用 cable，外置烧录器未连接？")
         return False
     log_cb(f"[flash] 烧空板：device={prog.device} cable-index={cable} "
-           f"run={op.run} image={op.image.name} spiaddr={op.spiaddr:#08x}")
+           f"run={op.run} --fsFile={op.image.name} spiaddr={op.spiaddr:#08x}")
+    # --fsFile 接受 .fs / .bin 位流；需绝对路径（op.image 已 resolve）
     rc, out = _run(prog, [*_cable_args(prog.device, cable),
                           "--run", str(op.run), "--fsFile", str(op.image),
                           "--spiaddr", f"{op.spiaddr:#08x}"], log_cb, cancel)
@@ -255,6 +260,10 @@ if __name__ == "__main__":
     kr_err = "Error: Cable failed to open via the channel"
     flash_ok = "Erase Flash...\nProgram Flash...\nVerify Flash...\nFinished."
     flash_bad = "Program Flash...\nVerify Error at 0x1000\nUser Cancel!"
+    # 32U3 真机抓包：.bin 误经 --fsFile 载荷为 0，rc=0 且带 "Finished." 但中间报错
+    flash_bad2 = (" Programmning Flash starts from 0x800000.\n"
+                  " Programmning Flash ends at 0x0800000.\n"
+                  "Error: Program and Verify Flash Failed!\n Finished.")
     assert _device_online(run0_ok) is True
     assert _device_online(run0_bad) is False
     assert _efuse_state(kr_locked) == "locked"
@@ -262,5 +271,6 @@ if __name__ == "__main__":
     assert _efuse_state(kr_err) == "unknown"
     assert _write_ok(0, flash_ok) is True
     assert _write_ok(0, flash_bad) is False
+    assert _write_ok(0, flash_bad2) is False      # Error:+Finished 同现 -> 失败
     assert _write_ok(1, flash_ok) is False        # nonzero rc, even with "Finished"
     print("programmer 解析自测 PASS（online / locked / unlocked / 未连接 / 烧录成败）")

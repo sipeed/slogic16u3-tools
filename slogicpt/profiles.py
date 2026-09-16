@@ -73,17 +73,23 @@ class CaptureTest:
     samples: str
 
 
-# 镜像扩展名 -> Gowin exFlash op：.fs=Arora V 位流(54)，.bin=raw C Bin(56)。
-# programmer.toml 只需给 image，run 由此自动推导（也可用 flash.run 显式覆盖）。
-RUN_BY_EXT = {".fs": 54, ".bin": 56}
+# 烧空板默认 Gowin op：54 = "exFlash Erase,Program,Verify Arora V"。该操作经
+# --fsFile 同时接受 ASCII 的 .fs 与二进制 .bin 位流（实测 GW5AT-60B 的 dfu.bin
+# 二进制位流用 run 54 烧写并校验通过）。16U3/32U3 通用。
+# 切勿按扩展名映射到 run 55/56："C Bin" 是给 RISC-V 软核固件(.bin)的，拿它烧
+# FPGA 位流会静默写 0 字节、Verify 失败（起止地址相同）。确有 RISC-V 固件需求
+# 时，在 [programmer.flash] 显式写 run 覆盖即可。
+# 另注：Gowin CLI 的 --fsFile 需要绝对路径（相对路径报 "Not found any data File"），
+# 本模块传入的 image 已 .resolve() 为绝对路径。
+DEFAULT_FLASH_RUN = 54
 
 
 @dataclass(frozen=True)
 class FlashOp:
-    """烧空板：把 DFU 镜像写入外部 SPI Flash 的 Gowin CLI 参数。
+    """烧空板：把 DFU 位流写入外部 SPI Flash 的 Gowin CLI 参数。
     组装为 `<cli> --device D --cable-index c --run <run> --fsFile <image> --spiaddr <addr>`。"""
-    run: int                         # Gowin op：54=.fs(Arora V)  56=C Bin(raw .bin)，按扩展名自动推导
-    image: Path                      # DFU 镜像绝对路径（.fs 或 .bin）
+    run: int                         # Gowin op，默认 54（Arora V 位流，.fs/.bin 通用）
+    image: Path                      # DFU 位流绝对路径（.fs 或 .bin，均走 --fsFile）
     spiaddr: int                     # 外部 SPI Flash 起始地址
 
 
@@ -216,16 +222,9 @@ def load_programmer(product_dir: Path) -> tuple[Programmer | None, list[str]]:
         flash = None
         fraw = praw.get("flash")
         if fraw is not None:
-            image = (product_dir / str(fraw["image"])).resolve()
-            ext = image.suffix.lower()
-            run = int(fraw["run"]) if "run" in fraw else RUN_BY_EXT.get(ext)
-            if run is None:
-                raise ValueError(
-                    f"无法由镜像扩展名 {ext!r} 推导 run（仅支持 {'/'.join(RUN_BY_EXT)}），"
-                    f"请在 [programmer.flash] 显式指定 run")
             flash = FlashOp(
-                run=run,
-                image=image,
+                run=int(fraw["run"]) if "run" in fraw else DEFAULT_FLASH_RUN,
+                image=(product_dir / str(fraw["image"])).resolve(),
                 spiaddr=int(fraw.get("spiaddr", 0)),
             )
         eraw = praw.get("efuse")
