@@ -122,11 +122,26 @@ GUI 顶栏"⚠ 警告"角标里的每一条都对应一个待放置/待确认项
 
 - `programmer.toml` 的 `cli` 支持 `cli_linux` / `cli_windows` / `cli_darwin` 覆盖，
   同一份资源包可同时服务两种产线工位（其余声明与资源全平台通用）；
+- **Windows 工位必须显式配 `cli_windows`**：Linux 缺省会自动用 `bin/` 下的 Gowin
+  AppImage，但 Windows 无 AppImage，不配 `cli_windows` 则烧空板/eFuse/切换保底全禁用。
+  指向本机 Gowin `programmer_cli.exe` 即可，例如
+  `cli_windows = ["C:/Gowin/Programmer/bin/programmer_cli.exe"]`；
 - Windows 工位需 libusb 环境（WinUSB 驱动/Zadig 与 `libusb-1.0.dll`），与旧产测环境一致。
+
+### Windows 工位放置清单
+
+| 项 | 放置 |
+|---|---|
+| Python（**仅源码运行时**需要，跑打包好的 exe 不需要） | **3.11 或更高**（依赖标准库 tomllib；低版本启动即报错退出） |
+| sigrok-cli | `bin/sigrok-cli-windows-x86_64.exe` |
+| Gowin 烧录器 | 本机 `programmer_cli.exe` + 在各 `programmer.toml` 写 `cli_windows` 指向它 |
+| libusb 后端 | `libusb-1.0.dll`：放 `bin/` 下（`build.py` 会自动打包进 exe），或装到系统 / exe 同级；配合 WinUSB 驱动（Zadig） |
+| 固件资源 | `products/<id>/firmware/` 下的 app.bin / dfu.* / efuse.ekey |
 
 ## 打包分发
 
-`python build.py`（PyInstaller）产出单二进制，与本 `resources/` 目录平级摆放：
+`python build.py`（PyInstaller，需 **Python 3.11+** 解释器）产出单二进制，与本
+`resources/` 目录平级摆放。Windows 上若 `bin/libusb-1.0.dll` 存在则自动打包进 exe：
 
 ```
 SLogicPT/
