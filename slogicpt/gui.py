@@ -410,7 +410,6 @@ class ProductionTestGUI(QWidget):
         self.probe_cable = None
         self._rebuild_sequence(p)
         self._rebuild_aux(p)
-        self._update_efuse_btn()
         self.channel_combo.blockSignals(True)
         self.channel_combo.clear()
         self.channel_combo.addItems([str(c) for c in p.channel_options])
@@ -448,19 +447,11 @@ class ProductionTestGUI(QWidget):
             item = self.aux_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
-        # eFuse 写锁需外置 JTAG 烧录器，收进 programmer_aux_buttons，由
-        # _update_enablement 按 programmer_present + eFuse 状态门控。
+        # 需外置 JTAG 烧录器的辅助按钮（由 _update_enablement 按 programmer_present
+        # 门控）。注：eFuse 写锁不再是独立按钮——它是烧空板的前置步骤（加密 DFU
+        # 须先写入 AES 密钥才能启动），由 blank:efuse 步骤自动完成；锁定状态显示
+        # 在设备状态栏前缀（refresh_device_status）。
         self.programmer_aux_buttons: list[QPushButton] = []
-        self.efuse_btn: QPushButton | None = None
-        self._efuse_label = "eFuse Lock"
-        if p.programmer is not None and p.programmer.efuse_key_file is not None:
-            # 前缀图标由 _update_efuse_btn 按锁定状态动态设置
-            btn = QPushButton(self._efuse_label)
-            btn.setToolTip("产线终检操作，谨慎执行（需外置烧录器）")
-            btn.clicked.connect(self.run_efuse_lock)
-            self.aux_layout.addWidget(btn)
-            self.programmer_aux_buttons.append(btn)
-            self.efuse_btn = btn
         # DFU<->APP 手动切换：文案与方向按当前设备模式在 _update_switch_btn 中更新；
         # 启用状态另行管理（需检测到设备才可用）。
         self.switch_btn = QPushButton("🔀 DFU ↔ APP 切换")
@@ -471,16 +462,11 @@ class ProductionTestGUI(QWidget):
         self.reflash_btn.clicked.connect(self.run_reflash)
         self.aux_layout.addWidget(self.reflash_btn)
         self.aux_layout.addStretch(1)
-        self._update_efuse_btn()
 
-    def _update_efuse_btn(self):
-        """eFuse 按钮前缀图标反映锁定状态：⚪未知（无外置烧录器）/🔓未锁/🔒已锁。"""
-        btn = getattr(self, "efuse_btn", None)
-        if btn is None:
-            return
-        icon = {"locked": "🔒 已锁", "unlocked": "🔓 未锁"}.get(
-            self.efuse_status, "⚪ 未知")
-        btn.setText(f"{icon}  {self._efuse_label}")
+    def _efuse_badge(self) -> str:
+        """eFuse 锁定状态徽标（显示在设备状态前）：⚪未知/🔓未锁/🔒已锁。"""
+        return {"locked": "🔒eFuse已锁", "unlocked": "🔓eFuse未锁"}.get(
+            self.efuse_status, "⚪eFuse未知")
 
     def _on_channels_changed(self, text: str):
         p = self.profile
@@ -534,12 +520,14 @@ class ProductionTestGUI(QWidget):
             seen.add(key)
             others.append("SLogic DFU" if key in shared_dfu else str(d))
         others_txt = f"　(另在线: {', '.join(others)})" if others else ""
+        badge = self._efuse_badge()   # eFuse 状态（来自 🔄 扫描）前置显示
         if mine is not None:
-            self.device_status_label.setText(f"设备: {mine}{others_txt}")
+            self.device_status_label.setText(f"{badge} | 设备: {mine}{others_txt}")
             self.device_status_label.setStyleSheet("color: #2e7d32;")
         else:
             name = p.display_name if p else "SLogic"
-            self.device_status_label.setText(f"未检测到 {name} 设备{others_txt}")
+            self.device_status_label.setText(
+                f"{badge} | 未检测到 {name} 设备{others_txt}")
             self.device_status_label.setStyleSheet("color: #c62828;")
         self._update_enablement()
 
@@ -630,24 +618,9 @@ class ProductionTestGUI(QWidget):
             row.run_btn.setToolTip(tip if not ok else "")
         prog_tip = ("产线终检操作，谨慎执行" if prog_ok
                     else "需要连接外置烧录器：点顶栏 🔄 扫描")
-        efuse_btn = getattr(self, "efuse_btn", None)
         for btn in getattr(self, "programmer_aux_buttons", []):
-            if btn is efuse_btn:
-                # eFuse 写锁不可逆：仅"未锁"允许点击；"已锁"/"未知"一律禁用
-                ok = prog_ok and self.efuse_status == "unlocked"
-                if not prog_ok:
-                    tip = "需要连接外置烧录器：点顶栏 🔄 扫描"
-                elif self.efuse_status == "locked":
-                    tip = "eFuse 已锁定，不可重复写入（不可逆）"
-                elif self.efuse_status == "unlocked":
-                    tip = "写入并锁定 AES 密钥（不可逆）"
-                else:
-                    tip = "eFuse 状态未知：请先点 🔄 扫描确认为未锁"
-                btn.setEnabled(not busy and ok)
-                btn.setToolTip(tip)
-            else:
-                btn.setEnabled(not busy and prog_ok)
-                btn.setToolTip(prog_tip)
+            btn.setEnabled(not busy and prog_ok)
+            btn.setToolTip(prog_tip)
         if hasattr(self, "reflash_btn"):
             self.reflash_btn.setEnabled(not busy and p.dfu_pid is not None and fw_ok)
         self.sampling_btn.setEnabled(
@@ -694,6 +667,8 @@ class ProductionTestGUI(QWidget):
             return
         self.pipeline = pl
         self._session_t0 = time.time()
+        # 本次运行含 eFuse 写锁步骤：成功后自动复扫，让 eFuse 徽标翻成 🔒
+        self._rescan_after = any(s.id == "blank:efuse" for s in pl.steps)
         if reset_rows:
             for row in self.step_rows.values():
                 row.reset()
@@ -730,16 +705,6 @@ class ProductionTestGUI(QWidget):
             p, self.sigrok, self._callbacks(), step_id, self._override_firmware(),
             cable_index=self.probe_cable),
             reset_rows=False)
-
-    def run_efuse_lock(self):
-        p = self.profile
-        if p is None:
-            return
-        # after a successful lock, auto re-probe so the eFuse icon flips to 🔒
-        self._rescan_after = True
-        self.log_signal.emit("===== 辅助操作: eFuse 写入并锁定 =====")
-        self._start(pipeline_mod.Pipeline.efuse_lock(
-            p, self._callbacks(), cable_index=self.probe_cable), reset_rows=False)
 
     def run_probe(self):
         """Manual 🔄 scan: probe the external JTAG programmer (read-only) and
@@ -884,8 +849,7 @@ class ProductionTestGUI(QWidget):
             self.log_signal.emit(f"外置烧录器已连接：{res.detail}")
         else:
             self.log_signal.emit(f"未检测到外置烧录器：{res.detail}")
-        self._update_efuse_btn()
-        self._update_enablement()
+        self.refresh_device_status()   # 设备状态栏前缀的 eFuse 徽标 + 使能刷新
 
     def _on_finished(self, ok: bool, report: str):
         self._close_switch_popup()

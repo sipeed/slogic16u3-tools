@@ -25,7 +25,7 @@ timeout_s = 30
 [programmer.flash]                 # 烧空板：把 DFU 镜像写入外部 SPI Flash，上电从此启动
 image = "firmware/dfu.fs"          # 16U3 工具链导出 .fs 位流（工厂放置，gitignore）
 # run 由扩展名自动推导：.fs->54（Arora V 位流），.bin->56（C Bin）。如需覆盖再加 run =
-spiaddr = 0x000000                 # 外部 SPI Flash 启动地址
+spiaddr = 0x800000                 # 外部 SPI Flash 8M 偏移（16U3/32U3 相同）
 
 [programmer.efuse]                 # eFuse AES 密钥写入 + 锁定（不可逆）
 key_file = "firmware/efuse.ekey"   # Gowin .ekey 密钥文件（机密，绝不入库）

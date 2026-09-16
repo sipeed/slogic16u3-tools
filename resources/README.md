@@ -61,9 +61,9 @@ timeout_s = 30
 [programmer.flash]             # 空板烧写；缺省 → 无烧空板能力
 image = "firmware/dfu.fs"      # 相对产品目录；32U3 = "firmware/dfu.bin"
 # run 由扩展名自动推导：.fs → 54（Arora V 位流），.bin → 56（C Bin）；如需可加 run = 覆盖
-spiaddr = 0x000000
+spiaddr = 0x800000             # 外部 SPI Flash 8M 偏移（16U3/32U3 相同）
 
-[programmer.efuse]             # eFuse 写锁；缺省 → 无 eFuse 写锁能力
+[programmer.efuse]             # eFuse AES 密钥；缺省 → 烧空板无 eFuse 前置步骤
 key_file = "firmware/efuse.ekey"
 
 # [programmer.switch]          # DFU↔APP 保底切换（产品不支持 USB RECONFIG 时）
@@ -71,6 +71,13 @@ key_file = "firmware/efuse.ekey"
 # app2dfu = ["--run", "52", "--fsFile", "firmware/dfu.fs"]
 # 每方向一组参数，追加在公共前缀之后；含 "/" 的 token 按产品目录解析为绝对路径。
 ```
+
+> **eFuse 与烧空板的关系**：DFU 位流是 AES 加密的，FPGA 须先把密钥写入 eFuse
+> 才能启动它（write），lock 只是防止密钥被读出。因此声明了 `[programmer.efuse]`
+> 时，烧空板序列自动带前置步骤 `blank:efuse`：读锁定位 → 已锁则跳过 → 未锁则
+> 写入并锁定（**不可逆**）→ 回读校验，随后才烧写 DFU 镜像；步骤结果计入测试
+> 报告。GUI 无独立 eFuse 按钮，锁定状态（⚪未知/🔓未锁/🔒已锁，来自顶栏 🔄
+> 扫描）显示在设备状态栏前缀。
 
 > - `cli` 第一个参数若能在产品目录内解析为文件则按文件用，否则按 PATH 命令查找，
 >   因此 Windows 只需把 `cli_windows` 指向本机 `programmer_cli.exe` 即可，其余不变；
@@ -107,7 +114,7 @@ GUI 顶栏"⚠ 警告"角标里的每一条都对应一个待放置/待确认项
 | `应用固件缺失: .../app.bin` | 把应用固件放到 `products/<id>/firmware/app.bin` |
 | `未找到烧录器 CLI` | 把 Gowin Programmer AppImage 放进 `bin/`，或在 `programmer.toml` 声明 `cli` |
 | `DFU 镜像缺失` | 把空板镜像放到 `products/<id>/firmware/`（16U3=dfu.fs / 32U3=dfu.bin） |
-| `eFuse 密钥文件缺失` | 把 `efuse.ekey` 放到 `products/<id>/firmware/`（缺失时 eFuse 写锁禁用） |
+| `eFuse 密钥文件缺失` | 把 `efuse.ekey` 放到 `products/<id>/firmware/`（缺失时烧空板的 eFuse 前置步骤会失败） |
 | `未找到 sigrok-cli 二进制` | 按平台命名放入 `bin/`（见上文） |
 
 ## 跨平台（Linux / Windows）

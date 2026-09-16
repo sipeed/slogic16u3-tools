@@ -176,6 +176,25 @@ def flash(prog: Programmer, cable_index: int | None = None,
     return ok
 
 
+def efuse_state(prog: Programmer, cable_index: int | None = None,
+                log_cb: Callable[[str], None] = print,
+                cancel: threading.Event | None = None
+                ) -> tuple[EFuse, int | None]:
+    """读 eFuse 锁定状态（--keyread，只读）。返回 (状态, 实际使用的 cable)。"""
+    if not prog.cli:
+        log_cb("[efuse] 未找到烧录器 CLI")
+        return "unknown", None
+    cable = _resolve_cable(prog, cable_index, log_cb, cancel)
+    if cable is None:
+        log_cb("[efuse] 未找到可用 cable，外置烧录器未连接？")
+        return "unknown", None
+    _, out = _run(prog, [*_cable_args(prog.device, cable), "--keyread"],
+                  log_cb, cancel)
+    state = _efuse_state(out)
+    log_cb(f"[efuse] 状态: {state}（cable-index={cable}）")
+    return state, cable
+
+
 def switch(prog: Programmer, direction: str, cable_index: int | None = None,
            log_cb: Callable[[str], None] = print,
            cancel: threading.Event | None = None) -> bool:

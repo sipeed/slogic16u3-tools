@@ -1,8 +1,9 @@
 """Production-test pipeline engine.
 
-Full flow:  blank_flash (in_pipeline steps) -> wait DFU device ->
-flash app firmware (+verify) -> wait APP device -> capture+verify each
-configured test point -> PASS/FAIL summary.
+Full flow:  eFuse ensure (write+lock the AES key if unlocked -- an encrypted
+DFU bitstream cannot boot without it) -> blank-flash the DFU image ->
+wait DFU device -> flash app firmware (+verify) -> wait APP device ->
+capture+verify each configured test point -> PASS/FAIL summary.
 
 Mode-switch policy (per user decision): after each flashing stage, wait for
 the target PID; on timeout, raise a non-blocking operator prompt ("please
@@ -62,7 +63,12 @@ def sequence_plan(profile: ProductProfile) -> list[tuple[str, str]]:
     """(id, label) of the linear production sequence, without a Pipeline
     instance -- the GUI builds its step list from this so ids always match."""
     plan: list[tuple[str, str]] = []
-    if profile.programmer is not None and profile.programmer.flash is not None:
+    prog = profile.programmer
+    if prog is not None and prog.flash is not None:
+        # 加密 DFU 位流须先把 AES 密钥写入 eFuse 才能启动（lock 防密钥读出），
+        # 故 eFuse 写锁是烧空板的前置步骤：未锁 -> 写入并锁定；已锁 -> 跳过。
+        if prog.efuse_key_file is not None:
+            plan.append(("blank:efuse", "烧空板 · eFuse 密钥写锁"))
         plan.append(("blank:flash", "烧空板 · 烧写 DFU 镜像"))
     plan.append(("wait_dfu", "等待 DFU 设备"))
     plan.append(("flash_app", "DFU 烧写应用固件"))
@@ -90,7 +96,11 @@ class Pipeline:
 
     def _sequence_defs(self) -> list[StepDef]:
         defs: list[StepDef] = []
-        if self.profile.programmer is not None and self.profile.programmer.flash is not None:
+        prog = self.profile.programmer
+        if prog is not None and prog.flash is not None:
+            if prog.efuse_key_file is not None:
+                defs.append(StepDef("blank:efuse", "烧空板 · eFuse 密钥写锁",
+                                    self._efuse_ensure))
             defs.append(StepDef("blank:flash", "烧空板 · 烧写 DFU 镜像",
                                 self._flash_blank))
         defs.append(StepDef("wait_dfu", "等待 DFU 设备", self._wait_dfu))
@@ -129,15 +139,6 @@ class Pipeline:
         if not matches:
             raise ValueError(f"未知步骤: {step_id}")
         p.steps = matches
-        return p
-
-    @classmethod
-    def efuse_lock(cls, profile: ProductProfile, callbacks: PipelineCallbacks,
-                   cable_index: int | None = None) -> "Pipeline":
-        """eFuse AES-key write + lock (irreversible), via the programmer CLI."""
-        p = cls(profile, None, callbacks, [])
-        p._cable_index = cable_index
-        p.steps = [StepDef("efuse:lock", "eFuse 写入并锁定", p._efuse_lock)]
         return p
 
     @classmethod
@@ -236,13 +237,46 @@ class Pipeline:
 
     _cable_index = None    # external-programmer cable index (from the GUI probe)
 
-    def _flash_blank(self) -> bool:
-        return programmer_mod.flash(
-            self.profile.programmer, self._cable_index, self._log, self.cancel)
+    def _efuse_ensure(self) -> bool:
+        """烧空板前置：加密 DFU 位流须以 eFuse 中的 AES 密钥启动（write），
+        lock 防止密钥被读出。已锁 -> 密钥已在，跳过；未锁 -> 写入并锁定
+        （不可逆），随后回读锁定位校验。"""
+        prog = self.profile.programmer
+        state, cable = programmer_mod.efuse_state(
+            prog, self._cable_index, self._log, self.cancel)
+        if cable is not None:
+            self._cable_index = cable   # 后续烧写步骤复用同一 cable
+        if state == "locked":
+            self._log("eFuse 已锁定（密钥已写入），跳过写锁")
+            self.report_lines.append("eFuse 写锁: SKIP（已锁定）")
+            return True
+        if state != "unlocked":
+            self._log("无法确认 eFuse 状态（外置烧录器未连接/线缆异常？），中止")
+            self.report_lines.append("eFuse 写锁: FAIL（状态未知）")
+            return False
+        self._log("eFuse 未锁：写入 AES 密钥并锁定（加密 DFU 启动前提，不可逆）…")
+        if not programmer_mod.efuse_lock(prog, self._cable_index,
+                                         self._log, self.cancel):
+            self.report_lines.append("eFuse 写锁: FAIL（写入失败）")
+            return False
+        # 回读校验：写锁后 --keyread 应报 Device Locked
+        state2, _ = programmer_mod.efuse_state(
+            prog, self._cable_index, self._log, self.cancel)
+        ok = state2 == "locked"
+        self.report_lines.append(
+            "eFuse 写锁: " + ("OK（回读确认已锁定）" if ok else "FAIL（回读未确认锁定）"))
+        if not ok:
+            self._log("回读 eFuse 未确认锁定，判定失败")
+        return ok
 
-    def _efuse_lock(self) -> bool:
-        return programmer_mod.efuse_lock(
+    def _flash_blank(self) -> bool:
+        ok = programmer_mod.flash(
             self.profile.programmer, self._cable_index, self._log, self.cancel)
+        op = self.profile.programmer.flash
+        self.report_lines.append(
+            f"烧空板 DFU 镜像: {'OK' if ok else 'FAIL'} "
+            f"({op.image.name} @ {op.spiaddr:#x})")
+        return ok
 
     def _wait_mode(self, pid: int, timeout_s: float, what: str) -> bool:
         self._log(f"等待 {what} 设备 ({self.profile.vid:#06x}:{pid:#06x})...")

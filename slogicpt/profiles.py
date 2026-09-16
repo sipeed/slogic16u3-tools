@@ -452,7 +452,8 @@ def check_resources(profiles: list[ProductProfile],
             if prog.efuse_key_file is not None and not prog.efuse_key_file.is_file():
                 problems.append(Problem(
                     "warning", p.id,
-                    f"eFuse 密钥文件缺失: {prog.efuse_key_file}，eFuse 写锁禁用"))
+                    f"eFuse 密钥文件缺失: {prog.efuse_key_file}，"
+                    "烧空板的 eFuse 写锁前置步骤将失败"))
             for d, args in prog.switch.items():
                 for t in args:
                     tp = Path(t)
