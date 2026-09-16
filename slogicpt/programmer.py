@@ -8,6 +8,7 @@ files -- no wrapper shell scripts:
   eFuse read (lock bit) <cli> --device D --cable-index c --keyread
   blank flash           <cli> --device D --cable-index c --run <run> --fsFile <image> --spiaddr <addr>
   eFuse write + lock    <cli> --device D --cable-index c --keywritefile --keyFile <key> --keylock
+  DFU<->APP fallback    <cli> --device D --cable-index c <programmer.switch args>
 
 probe() and eFuse read are read-only.  flash() and efuse_lock() write the
 chip; the GUI gates them behind a successful probe (which supplies the
@@ -172,6 +173,28 @@ def flash(prog: Programmer, cable_index: int | None = None,
                           "--spiaddr", f"{op.spiaddr:#08x}"], log_cb, cancel)
     ok = _write_ok(rc, out)
     log_cb(f"[flash] {'烧录完成' if ok else '烧录失败'}")
+    return ok
+
+
+def switch(prog: Programmer, direction: str, cable_index: int | None = None,
+           log_cb: Callable[[str], None] = print,
+           cancel: threading.Event | None = None) -> bool:
+    """DFU<->APP 保底切换：执行 [programmer.switch] 声明的 dfu2app / app2dfu
+    参数（如经 JTAG 向 SRAM 写入另一份位流）。未声明该方向 -> False（调用方
+    回退弹窗人工）。"""
+    args = prog.switch.get(direction)
+    if not prog.cli or not args:
+        return False
+    cable = _resolve_cable(prog, cable_index, log_cb, cancel)
+    if cable is None:
+        log_cb("[switch] 未找到可用 cable，外置烧录器未连接？")
+        return False
+    log_cb(f"[switch] 经外置烧录器切换（{direction}）：device={prog.device} "
+           f"cable-index={cable}")
+    rc, out = _run(prog, [*_cable_args(prog.device, cable), *args],
+                   log_cb, cancel)
+    ok = _write_ok(rc, out)
+    log_cb(f"[switch] {'切换命令完成' if ok else '切换命令失败'}")
     return ok
 
 

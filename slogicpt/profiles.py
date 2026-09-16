@@ -20,7 +20,7 @@ import platform as platform_mod
 import re
 import sys
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
@@ -91,32 +91,18 @@ class FlashOp:
 class Programmer:
     """外置 JTAG 烧录器命令声明（来自 programmer.toml）。一个 `cli` argv 前缀
     驱动全部操作：探测（--run 0）、eFuse 读（--keyread）、烧空板（FlashOp）、
-    eFuse 写+锁（--keywritefile --keyFile <key> --keylock）。缺省则无烧录能力。"""
+    eFuse 写+锁（--keywritefile --keyFile <key> --keylock）、DFU<->APP 保底
+    切换（switch，见下）。缺省则无烧录能力。"""
     cli: list[str]                   # argv 前缀，如 [<appimage>, "--programmer-cli"] 或 ["programmer_cli.exe"]
     device: str                      # Gowin --device 型号，如 GW5AT-15A / GW5AT-60B
     cable_candidates: list[int]      # 逐个尝试的 --cable-index，首个读到器件的即用
     timeout_s: float
     flash: FlashOp | None            # None -> 未声明 [programmer.flash]，无烧空板
     efuse_key_file: Path | None      # None -> 未声明 [programmer.efuse]，无 eFuse 写锁
-
-
-@dataclass(frozen=True)
-class ModeSwitch:
-    """DFU<->APP 模式切换方式。
-    - "manual":      工具不自动切换；切换步骤仅提示，由工人手动操作，随后等待目标
-                     模式设备出现。
-    - "script":      工具运行脚本切换（如 16U3 外置 JTAG + gowin_cli），工具会向
-                     argv 追加方向参数 "dfu2app" / "app2dfu"。脚本未放置时自动回退
-                     为人工提示（即"外置 JTAG 或工人手动"）。相对路径按产品目录解析。
-    - "usb_reconfig": 工具用 USB 控制传输 RECONFIG（见"USB LA 协议规范"0x30）触发
-                     FPGA 重配置，双向自动切换（如 32U3）。
-    """
-    method: str                      # "manual" | "script" | "usb_reconfig"
-    argv: list[str] | None = None    # script 方式命令（工具追加 dfu2app/app2dfu）
-    timeout_s: float = 60
-
-
-MODE_SWITCH_METHODS = ("manual", "script", "usb_reconfig")
+    # [programmer.switch]：模式切换保底方案（USB 切换不可用时经外置烧录器执行）。
+    # 键 "dfu2app"/"app2dfu" -> 追加在公共前缀之后的参数；含 "/" 的 token 视为
+    # 产品目录相对路径并解析为绝对路径。空 dict -> 未声明，回退弹窗人工。
+    switch: dict[str, list[str]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -168,8 +154,10 @@ class ProductProfile:
     app_firmware: Path | None           # resolved absolute path (may not exist yet)
     app_flash_addr: int
     verify_after_flash: bool
-    mode_switch: ModeSwitch             # DFU<->APP 切换方式
-    product_dir: Path                   # resources/products/<id>/（固件与切换脚本按此解析）
+    # DFU<->APP 切换：True -> 产品自身支持 USB 控制传输 RECONFIG（无需外置硬件，
+    # 首选）；False -> 依次回退 programmer.switch（外置烧录器保底）/ 弹窗人工。
+    switch_usb_reconfig: bool
+    product_dir: Path                   # resources/products/<id>/（固件等资源按此解析）
     programmer: Programmer | None       # None -> programmer.toml 缺失/无效，无烧录能力
     timeouts: Timeouts
 
@@ -244,6 +232,22 @@ def load_programmer(product_dir: Path) -> tuple[Programmer | None, list[str]]:
         key_file = (product_dir / str(eraw["key_file"])).resolve() \
             if eraw is not None else None
 
+        switch: dict[str, list[str]] = {}
+        sraw = praw.get("switch")
+        if sraw is not None:
+            for direction in ("dfu2app", "app2dfu"):
+                args = sraw.get(direction)
+                if args is None:
+                    continue
+                # 含 "/" 的 token 视为产品目录相对路径（如 firmware/xx.fs），
+                # 解析为绝对路径，与 cli 首元素的解析规则一致
+                switch[direction] = [
+                    str((product_dir / a).resolve())
+                    if "/" in str(a) and not Path(str(a)).is_absolute() else str(a)
+                    for a in args]
+            if not switch:
+                raise ValueError("[programmer.switch] 需至少声明 dfu2app 或 app2dfu")
+
         prog = Programmer(
             cli=cli,
             device=str(praw["device"]),
@@ -251,6 +255,7 @@ def load_programmer(product_dir: Path) -> tuple[Programmer | None, list[str]]:
             timeout_s=float(praw.get("timeout_s", 30)),
             flash=flash,
             efuse_key_file=key_file,
+            switch=switch,
         )
         return prog, []
     except (KeyError, ValueError, TypeError) as e:
@@ -328,21 +333,10 @@ def _parse_profile(product_dir: Path) -> tuple[ProductProfile | None, list[Probl
         app_rel = firmware.get("app")
         app_firmware = (product_dir / app_rel).resolve() if app_rel else None
 
+        # DFU<->APP 切换能力：产品自身是否支持 USB 控制传输 RECONFIG（"USB LA
+        # 协议规范"0x30）。保底方案在 programmer.toml [programmer.switch] 声明。
         ms_raw = doc.get("mode_switch", {})
-        ms_method = str(ms_raw.get("method", "manual"))
-        if ms_method not in MODE_SWITCH_METHODS:
-            return err(f"mode_switch.method={ms_method!r} 无效，应为 {MODE_SWITCH_METHODS}")
-        ms_argv = None
-        if ms_method == "script":
-            # 平台专用命令 argv_linux / argv_windows / argv_darwin 优先于通用 argv
-            argv_raw = ms_raw.get(f"argv_{PLATFORM_KEY}", ms_raw.get("argv"))
-            if argv_raw is None:
-                # 脚本未声明 → 回退为人工提示（"外置 JTAG 或工人手动"）
-                ms_method = "manual"
-            else:
-                ms_argv = [str(a) for a in argv_raw]
-        mode_switch = ModeSwitch(method=ms_method, argv=ms_argv,
-                                 timeout_s=float(ms_raw.get("timeout_s", 60)))
+        switch_usb_reconfig = bool(ms_raw.get("usb_reconfig", False))
 
         programmer, prog_errors = load_programmer(product_dir)
         for m in prog_errors:
@@ -382,7 +376,7 @@ def _parse_profile(product_dir: Path) -> tuple[ProductProfile | None, list[Probl
             app_firmware=app_firmware,
             app_flash_addr=int(firmware.get("app_flash_addr", 0)),
             verify_after_flash=bool(firmware.get("verify", True)),
-            mode_switch=mode_switch,
+            switch_usb_reconfig=switch_usb_reconfig,
             product_dir=product_dir,
             programmer=programmer,
             timeouts=timeouts,
@@ -459,6 +453,15 @@ def check_resources(profiles: list[ProductProfile],
                 problems.append(Problem(
                     "warning", p.id,
                     f"eFuse 密钥文件缺失: {prog.efuse_key_file}，eFuse 写锁禁用"))
+            for d, args in prog.switch.items():
+                for t in args:
+                    tp = Path(t)
+                    # 只查被解析为产品目录内路径的 token（即声明里带 "/" 的资源引用）
+                    if tp.is_absolute() and tp.is_relative_to(p.product_dir) \
+                            and not tp.is_file():
+                        problems.append(Problem(
+                            "warning", p.id,
+                            f"切换 {d} 引用的文件缺失: {tp}，该方向回退弹窗人工"))
     return problems
 
 
@@ -477,9 +480,11 @@ if __name__ == "__main__":
         print(f"  期望: {p.expected.freq_hz/1e6:g}MHz ±{p.expected.freq_tol_pct}%, "
               f"{p.expected.duty_pct}% ±{p.expected.duty_tol_pp}pp")
         print(f"  固件: {p.app_firmware} @ {p.app_flash_addr:#x}")
-        ms = p.mode_switch
-        ms_extra = f"  argv={ms.argv}" if ms.method == "script" else ""
-        print(f"  模式切换: {ms.method}{ms_extra}")
+        sw = ["USB RECONFIG"] if p.switch_usb_reconfig else []
+        if p.programmer is not None and p.programmer.switch:
+            sw.append(f"烧录器保底({'/'.join(p.programmer.switch)})")
+        sw.append("弹窗人工")
+        print(f"  模式切换: {' -> '.join(sw)}")
         if p.programmer is None:
             print("  烧录器: 无 programmer.toml")
         else:
@@ -489,6 +494,8 @@ if __name__ == "__main__":
                 print(f"    烧空板: run={pr.flash.run} image={pr.flash.image.name} spiaddr={pr.flash.spiaddr:#x}")
             if pr.efuse_key_file:
                 print(f"    eFuse:  key_file={pr.efuse_key_file.name}")
+            for d, args in pr.switch.items():
+                print(f"    切换 {d}: {' '.join(args)}")
     print(f"\n== {len(problems)} 个问题 ==")
     for prob in problems:
         print(f"  {prob}")

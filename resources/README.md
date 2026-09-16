@@ -9,11 +9,10 @@ resources/
 ├── products/<product_id>/        # 一产品一目录，目录名 = product_id
 │   ├── product.toml              # 产品档案（USB PID / 通道 / 带宽 / 期望信号 / 模式切换），公开入库
 │   ├── programmer.toml           # 外置烧录器命令（cli / device / flash / efuse），公开入库
-│   ├── firmware/                 # 固件与烧录资源（工厂本地，禁止入库/公开）
-│   │   ├── app.bin               #   应用固件（DFU 模式下经 SPI Flash 写入）
-│   │   ├── dfu.fs / dfu.bin      #   空板刷机镜像（16U3=.fs / 32U3=.bin）
-│   │   └── efuse.ekey            #   eFuse AES 密钥（机密，绝不入库）
-│   └── gowin_switch.sh / .bat    # 仅 mode_switch method="script" 用（如 16U3 外置 JTAG）
+│   └── firmware/                 # 固件与烧录资源（工厂本地，禁止入库/公开）
+│       ├── app.bin               #   应用固件（DFU 模式下经 SPI Flash 写入）
+│       ├── dfu.fs / dfu.bin      #   空板刷机镜像（16U3=.fs / 32U3=.bin）
+│       └── efuse.ekey            #   eFuse AES 密钥（机密，绝不入库）
 └── bin/                          # 跨平台工具二进制
     ├── sigrok-cli-linux-x86_64            # sigrok-cli：Linux AppImage 重命名/软链
     ├── sigrok-cli-windows-x86_64.exe      #   Windows
@@ -46,6 +45,7 @@ cp efuse.ekey           resources/products/slogic16u3/firmware/efuse.ekey
 | eFuse 读锁定位 | `<cli> --device D --cable-index c --keyread` |
 | 空板烧写 | `<cli> --device D --cable-index c --run <run> --fsFile <image> --spiaddr <addr>` |
 | eFuse 写入并锁定（不可逆） | `<cli> --device D --cable-index c --keywritefile --keyFile <key> --keylock` |
+| DFU↔APP 保底切换 | `<cli> --device D --cable-index c <switch.dfu2app / app2dfu 参数>` |
 
 ```toml
 schema_version = 1
@@ -65,6 +65,11 @@ spiaddr = 0x000000
 
 [programmer.efuse]             # eFuse 写锁；缺省 → 无 eFuse 写锁能力
 key_file = "firmware/efuse.ekey"
+
+# [programmer.switch]          # DFU↔APP 保底切换（产品不支持 USB RECONFIG 时）
+# dfu2app = ["--run", "52", "--fsFile", "firmware/app_sram.fs"]
+# app2dfu = ["--run", "52", "--fsFile", "firmware/dfu.fs"]
+# 每方向一组参数，追加在公共前缀之后；含 "/" 的 token 按产品目录解析为绝对路径。
 ```
 
 > - `cli` 第一个参数若能在产品目录内解析为文件则按文件用，否则按 PATH 命令查找，
@@ -75,11 +80,12 @@ key_file = "firmware/efuse.ekey"
 
 ## product.toml：产品档案
 
-> DFU<->APP 模式切换由 `[mode_switch]` 声明，`method` 三选一：
-> - `script`：工具运行切换脚本并自动追加方向参数 `dfu2app`/`app2dfu`（16U3 =
->   外置 JTAG，脚本 `gowin_switch.sh`/`.bat` 放产品目录，缺失时回退人工提示）；
-> - `usb_reconfig`：工具经 USB 控制传输 RECONFIG 自动双向切换，无需脚本（32U3）；
-> - `manual`：工具只提示工人，随后等待目标模式设备出现。
+> DFU↔APP 模式切换**无需任何脚本**，按可用方案自动分派（优先级从高到低）：
+> 1. `[mode_switch] usb_reconfig = true`（product.toml）：产品自身经 USB 控制
+>    传输 RECONFIG 双向切换（32U3），不依赖外置硬件；
+> 2. `[programmer.switch]`（programmer.toml）：外置烧录器保底方案；
+> 3. 都没有（或都失败）：GUI 弹窗提示工人按板载 MODE 按键，检测到目标模式
+>    设备后自动继续。
 
 ## 保密边界（重要）
 
@@ -88,7 +94,6 @@ key_file = "firmware/efuse.ekey"
 
 - `products/<id>/firmware/*.fs`、`*.bin` — DFU 位流、应用固件等烧录资源
 - `products/<id>/firmware/*.ekey`、`efuse_key.txt` — eFuse AES 密钥（机密）
-- `products/<id>/gowin_switch.*` — mode_switch 切换脚本
 
 `product.toml` 与 `programmer.toml` 只声明接口契约（不含固件/密钥/位流实现），公开入库。
 
@@ -108,9 +113,7 @@ GUI 顶栏"⚠ 警告"角标里的每一条都对应一个待放置/待确认项
 ## 跨平台（Linux / Windows）
 
 - `programmer.toml` 的 `cli` 支持 `cli_linux` / `cli_windows` / `cli_darwin` 覆盖，
-  同一份资源包可同时服务两种产线工位；
-- `product.toml` 的 `[mode_switch]` 脚本步骤支持 `argv_linux` / `argv_windows` /
-  `argv_darwin`：Linux 放 `.sh`，Windows 放 `.bat`，互不干扰；
+  同一份资源包可同时服务两种产线工位（其余声明与资源全平台通用）；
 - Windows 工位需 libusb 环境（WinUSB 驱动/Zadig 与 `libusb-1.0.dll`），与旧产测环境一致。
 
 ## 打包分发

@@ -18,7 +18,6 @@ from enum import Enum
 from typing import Callable
 
 from . import device_watch
-from . import extcmd
 from . import flasher
 from . import mode_switch as mode_switch_mod
 from . import programmer as programmer_mod
@@ -42,6 +41,8 @@ class PipelineCallbacks:
     on_step: Callable[[str, StepStatus], None] = lambda name, st: None
     on_user_prompt: Callable[[str], None] = lambda s: None
     on_user_prompt_clear: Callable[[], None] = lambda: None
+    # 模式切换只剩人工方案（按板载 MODE 键）时的弹窗提示（GUI 弹 QMessageBox）
+    on_manual_switch: Callable[[str], None] = lambda s: None
     on_finished: Callable[[bool, str], None] = lambda ok, report: None
 
 
@@ -156,11 +157,12 @@ class Pipeline:
 
     @classmethod
     def reflash(cls, profile: ProductProfile, callbacks: PipelineCallbacks,
-                firmware_path=None) -> "Pipeline":
+                firmware_path=None, cable_index: int | None = None) -> "Pipeline":
         """返修复烧：（若设备在 APP 模式则）切回 DFU -> 等待 DFU 设备（超时提示
         人工操作）-> 重写应用固件 -> 切换到 APP -> 等待应用模式回归。"""
         p = cls(profile, None, callbacks, [])
         p._firmware_override = firmware_path
+        p._cable_index = cable_index
         p.steps = [StepDef("switch_dfu", "切换到 DFU 模式", p._switch_to_dfu),
                    StepDef("wait_dfu", "等待 DFU 设备", p._wait_dfu),
                    StepDef("flash_app", "DFU 烧写应用固件", p._flash_app),
@@ -170,11 +172,13 @@ class Pipeline:
 
     @classmethod
     def switch_mode(cls, profile: ProductProfile,
-                    callbacks: PipelineCallbacks, *, to_mode: str) -> "Pipeline":
+                    callbacks: PipelineCallbacks, *, to_mode: str,
+                    cable_index: int | None = None) -> "Pipeline":
         """辅助操作：在 DFU（烧录模式）与 APP（应用模式）之间手动切换当前
         设备，切换后等待目标模式就绪。to_mode='app' 即 DFU->APP，'dfu' 即
         APP->DFU（方向由 GUI 依当前设备模式决定）。"""
         p = cls(profile, None, callbacks, [])
+        p._cable_index = cable_index
         if to_mode == "app":
             p.steps = [StepDef("switch_app", "切换到 APP 模式", p._switch_to_app),
                        StepDef("wait_app", "等待 APP 设备", p._wait_app)]
@@ -293,28 +297,35 @@ class Pipeline:
         return True
 
     def _switch(self, from_pid: int, to_what: str) -> bool:
-        ms = self.profile.mode_switch
-        if ms.method == "usb_reconfig":
-            # 32U3：USB 控制传输 RECONFIG 自动双向切换
+        """DFU<->APP 切换，按可用方案依次尝试：
+        1. usb_reconfig（product.toml 声明的产品自身能力）：USB 控制传输
+           RECONFIG，无需外置硬件；
+        2. programmer.switch（programmer.toml 声明的保底方案）：经外置烧录器
+           CLI 执行；
+        3. 都不可用/都失败 -> 弹窗提示按板载 MODE 按键，随后的等待步骤
+        （含超时人工提示）确认真正就绪。"""
+        p = self.profile
+        direction = "dfu2app" if to_what == "APP" else "app2dfu"
+        if p.switch_usb_reconfig:
             self._log(f"发送 RECONFIG 切换到 {to_what} 模式 "
-                      f"（{self.profile.vid:#06x}:{from_pid:#06x}）...")
+                      f"（{p.vid:#06x}:{from_pid:#06x}）...")
             try:
-                mode_switch_mod.reconfig(self.profile.vid, from_pid, self._log)
+                mode_switch_mod.reconfig(p.vid, from_pid, self._log)
                 return True
             except mode_switch_mod.ModeSwitchError as e:
-                self._log(f"切换到 {to_what} 失败: {e}")
-                return False
-        if ms.method == "script":
-            # 16U3：外置 JTAG + gowin_cli 脚本，追加方向参数 dfu2app / app2dfu
-            direction = "dfu2app" if to_what == "APP" else "app2dfu"
-            self._log(f"运行外置 JTAG 脚本切换到 {to_what} 模式...")
-            return extcmd.run_command(
-                list(ms.argv) + [direction], self.profile.product_dir,
-                ms.timeout_s, f"switch_{direction}", self._log, self.cancel)
-        # method == "manual"：工具不自动切换，仅提示，真正的模式就绪由随后的
-        # 等待步骤（含超时人工提示）确认。
-        self._log(f"{self.profile.display_name}: 需人工切换到 {to_what} 模式"
-                  "（外置 JTAG + gowin_cli），随后自动等待设备就绪")
+                self._log(f"RECONFIG 切换失败: {e}，尝试保底方案…")
+        prog = p.programmer
+        if prog is not None and direction in prog.switch:
+            if programmer_mod.switch(prog, direction,
+                                     cable_index=self._cable_index,
+                                     log_cb=self._log, cancel=self.cancel):
+                return True
+            self._log("外置烧录器切换失败，转人工…")
+        # 只剩硬件操作：弹窗提示工人按板载 MODE 键，等待步骤兜底确认
+        msg = (f"请按板载 MODE 按键，将 {p.display_name} 切换到 {to_what} 模式；"
+               "检测到目标模式设备后自动继续")
+        self._log(msg)
+        self.cb.on_manual_switch(msg)
         return True
 
     def _wait_dfu(self) -> bool:

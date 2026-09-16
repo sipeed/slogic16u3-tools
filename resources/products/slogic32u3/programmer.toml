@@ -8,6 +8,7 @@
 #   eFuse 读      --device D --cable-index c --keyread
 #   烧空板        --device D --cable-index c --run <auto> --fsFile <image> --spiaddr <addr>
 #   eFuse 写+锁   --device D --cable-index c --keywritefile --keyFile <key_file> --keylock
+#   保底切换      --device D --cable-index c <switch.dfu2app / switch.app2dfu 参数>
 schema_version = 1
 
 [programmer]
@@ -28,3 +29,7 @@ spiaddr = 0x000000                 # 外部 SPI Flash 启动地址
 
 [programmer.efuse]                 # eFuse AES 密钥写入 + 锁定（不可逆）
 key_file = "firmware/efuse.ekey"   # Gowin .ekey 密钥文件（机密，绝不入库）
+
+# [programmer.switch]              # DFU<->APP 保底切换：32U3 首选 product.toml 的
+# usb_reconfig（USB 控制传输），通常无需此段；仅当需要外置烧录器兜底时再声明，
+# 语法同 slogic16u3/programmer.toml 中的示例。

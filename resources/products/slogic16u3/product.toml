@@ -46,14 +46,11 @@ app_flash_addr = 0x0         # 应用固件在 SPI Flash 中的烧写起始地�
 verify = true                # 烧写后回读校验
 
 [mode_switch]
-# DFU<->APP 切换方式。16U3 走外置 JTAG + gowin_cli 重配置（双向）。
-# method = "script"：工具运行切换脚本并自动追加方向参数 dfu2app / app2dfu；
-#   脚本（工厂放置，见保密边界）缺失时自动回退为人工提示。相对路径按本产品目录解析。
-# 注：烧空板与 eFuse 写锁已改为 programmer.toml 声明式驱动，不再用脚本；
-#   仅此 DFU<->APP 切换仍是外部命令钩子（缺硬件事实，暂保留）。
-method = "script"
-argv = ["bash", "gowin_switch.sh"]
-argv_windows = ["cmd", "/c", "gowin_switch.bat"]
+# DFU<->APP 切换按可用方案自动分派（无需脚本）：
+#   1. usb_reconfig = true：产品自身 USB 控制传输 RECONFIG（16U3 不支持）；
+#   2. programmer.toml [programmer.switch]：外置烧录器保底方案；
+#   3. 都没有 -> GUI 弹窗提示按板载 MODE 按键，随后自动等待目标模式设备。
+usb_reconfig = false
 timeout_s = 60
 
 [timeouts]

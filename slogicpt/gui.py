@@ -136,6 +136,7 @@ class ProductionTestGUI(QWidget):
     step_signal = pyqtSignal(str, object)
     prompt_signal = pyqtSignal(str)
     prompt_clear_signal = pyqtSignal()
+    manual_switch_signal = pyqtSignal(str)
     finished_signal = pyqtSignal(bool, str)
     probe_signal = pyqtSignal(object)
 
@@ -157,12 +158,14 @@ class ProductionTestGUI(QWidget):
         self.efuse_status = "unknown"       # unknown | unlocked | locked
         self.probe_cable: int | None = None
         self._rescan_after = False          # auto re-probe after a lock succeeds
+        self._switch_popup: QMessageBox | None = None  # 人工切换弹窗（非模态）
 
         self.init_ui()
         self.log_signal.connect(self.log_box.append)
         self.step_signal.connect(self._on_step)
         self.prompt_signal.connect(self._on_prompt)
         self.prompt_clear_signal.connect(self._on_prompt_clear)
+        self.manual_switch_signal.connect(self._on_manual_switch)
         self.finished_signal.connect(self._on_finished)
         self.probe_signal.connect(self._on_probe)
 
@@ -683,6 +686,7 @@ class ProductionTestGUI(QWidget):
             on_step=lambda sid, st: self.step_signal.emit(sid, st),
             on_user_prompt=self.prompt_signal.emit,
             on_user_prompt_clear=self.prompt_clear_signal.emit,
+            on_manual_switch=self.manual_switch_signal.emit,
             on_finished=lambda ok, rep: self.finished_signal.emit(ok, rep))
 
     def _start(self, pl: pipeline_mod.Pipeline, *, reset_rows: bool):
@@ -775,7 +779,8 @@ class ProductionTestGUI(QWidget):
             return
         self.log_signal.emit(f"===== 辅助操作: 模式切换 {title} =====")
         self._start(pipeline_mod.Pipeline.switch_mode(
-            p, self._callbacks(), to_mode=to_mode), reset_rows=False)
+            p, self._callbacks(), to_mode=to_mode,
+            cable_index=self.probe_cable), reset_rows=False)
 
     def run_reflash(self):
         p = self.profile
@@ -786,8 +791,9 @@ class ProductionTestGUI(QWidget):
             QMessageBox.warning(self, "固件缺失", f"固件文件不存在: {fw}")
             return
         self.log_signal.emit(f"===== 复烧（返修）: {p.display_name} =====")
-        self._start(pipeline_mod.Pipeline.reflash(p, self._callbacks(), fw),
-                    reset_rows=False)
+        self._start(pipeline_mod.Pipeline.reflash(
+            p, self._callbacks(), fw, cable_index=self.probe_cable),
+            reset_rows=False)
 
     def run_sampling(self):
         p = self.profile
@@ -833,6 +839,10 @@ class ProductionTestGUI(QWidget):
         row = self.step_rows.get(sid)
         if row is not None:
             row.set_status(status)
+        # 人工切换弹窗随后续"等待设备"步骤的完成自动关闭（设备已就绪/失败）
+        if sid.startswith("wait_") and status in (StepStatus.PASSED,
+                                                  StepStatus.FAILED):
+            self._close_switch_popup()
         if status == StepStatus.RUNNING:
             label = row.label_text if row else sid
             self.step_label.setText(f"当前步骤: {label}")
@@ -845,6 +855,24 @@ class ProductionTestGUI(QWidget):
 
     def _on_prompt_clear(self):
         self._prompt_text = ""
+
+    def _on_manual_switch(self, text: str):
+        """模式切换只剩硬件操作时的弹窗提示（非模态：流水线继续等待目标模式
+        设备出现，出现后 _on_step 自动关闭本弹窗）。"""
+        self._close_switch_popup()
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Information)
+        box.setWindowTitle("需要手动切换模式")
+        box.setText(text)
+        box.setStandardButtons(QMessageBox.Ok)
+        box.setModal(False)
+        box.show()
+        self._switch_popup = box
+
+    def _close_switch_popup(self):
+        if self._switch_popup is not None:
+            self._switch_popup.close()
+            self._switch_popup = None
 
     def _on_probe(self, res):
         self.scan_btn.setEnabled(True)
@@ -860,6 +888,7 @@ class ProductionTestGUI(QWidget):
         self._update_enablement()
 
     def _on_finished(self, ok: bool, report: str):
+        self._close_switch_popup()
         elapsed = time.time() - self._session_t0 if self._session_t0 else 0
         fail_steps = [r.label_text for r in self.step_rows.values()
                       if r.status == StepStatus.FAILED]
