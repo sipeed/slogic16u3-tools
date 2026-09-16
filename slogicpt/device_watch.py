@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 import usb.core
+import usb.util
 
 from .profiles import ProductProfile
 
@@ -25,9 +26,32 @@ class DeviceStatus:
     profile: ProductProfile
     mode: Mode
     pid: int
+    serial: str | None = None   # USB iSerialNumber descriptor (version marker)
 
     def __str__(self) -> str:
-        return f"{self.profile.display_name} ({self.mode.value})"
+        base = f"{self.profile.display_name} ({self.mode.value})"
+        return f"{base} SN:{self.serial}" if self.serial else base
+
+
+def _serial_of(dev) -> str | None:
+    """Read the USB iSerialNumber string descriptor, or None if the device
+    has no serial / it can't be read (perms, backend, kernel driver)."""
+    try:
+        if not dev.iSerialNumber:
+            return None
+        s = usb.util.get_string(dev, dev.iSerialNumber)
+        return s.strip() if s else None
+    except Exception:
+        return None
+
+
+def read_serial(vid: int, pid: int) -> str | None:
+    """SerialNumber of the (vid, pid) device currently enumerated, or None."""
+    try:
+        dev = usb.core.find(idVendor=vid, idProduct=pid)
+        return _serial_of(dev) if dev is not None else None
+    except Exception:
+        return None
 
 
 def scan_devices(profiles: list[ProductProfile]) -> list[DeviceStatus]:
@@ -38,8 +62,9 @@ def scan_devices(profiles: list[ProductProfile]) -> list[DeviceStatus]:
             candidates.append((p.dfu_pid, Mode.DFU))
         for pid, mode in candidates:
             try:
-                if usb.core.find(idVendor=p.vid, idProduct=pid) is not None:
-                    found.append(DeviceStatus(p, mode, pid))
+                dev = usb.core.find(idVendor=p.vid, idProduct=pid)
+                if dev is not None:
+                    found.append(DeviceStatus(p, mode, pid, _serial_of(dev)))
             except Exception:
                 pass  # backend hiccups shouldn't kill the poll loop
     return found

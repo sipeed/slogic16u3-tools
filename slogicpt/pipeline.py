@@ -83,6 +83,7 @@ class Pipeline:
         self.cancel = threading.Event()
         self._thread: threading.Thread | None = None
         self.report_lines: list[str] = []
+        self.app_serial: str | None = None   # APP USB SerialNumber (version id)
 
     # ---- construction helpers -------------------------------------------
 
@@ -218,7 +219,10 @@ class Pipeline:
             self.report_lines.append("流程异常，详见日志")
         finally:
             self.cb.on_user_prompt_clear()
-            self.cb.on_finished(all_pass, "\n".join(self.report_lines))
+            lines = list(self.report_lines)
+            if self.app_serial:
+                lines.insert(0, f"APP SN: {self.app_serial}")
+            self.cb.on_finished(all_pass, "\n".join(lines))
 
     # ---- steps -----------------------------------------------------------
 
@@ -231,10 +235,15 @@ class Pipeline:
 
     def _wait_mode(self, pid: int, timeout_s: float, what: str) -> bool:
         self._log(f"等待 {what} 设备 ({self.profile.vid:#06x}:{pid:#06x})...")
+
+        def ready(manual: bool) -> bool:
+            self._log(f"{what} 设备已就绪" + ("（人工介入后）" if manual else ""))
+            self._note_serial(pid, what)
+            return True
+
         if device_watch.wait_for_pid(self.profile.vid, pid, timeout_s,
                                      cancel=self.cancel):
-            self._log(f"{what} 设备已就绪")
-            return True
+            return ready(False)
         if self.cancel.is_set():
             return False
         # timeout -> prompt operator, keep polling indefinitely until cancel
@@ -245,12 +254,21 @@ class Pipeline:
         try:
             while not self.cancel.is_set():
                 if device_watch.find_pid(self.profile.vid, pid):
-                    self._log(f"{what} 设备已就绪（人工介入后）")
-                    return True
+                    return ready(True)
                 time.sleep(0.5)
             return False
         finally:
             self.cb.on_user_prompt_clear()
+
+    def _note_serial(self, pid: int, what: str) -> None:
+        """Log the APP device's USB SerialNumber (version identifier); it is
+        also prepended to the final report."""
+        if what != "APP":
+            return
+        sn = device_watch.read_serial(self.profile.vid, pid)
+        self.app_serial = sn
+        self._log(f"APP SerialNumber: {sn}（用于版本识别/区分）" if sn
+                  else "APP 设备未提供 SerialNumber 描述符")
 
     def _switch_to_app(self) -> bool:
         """DFU->APP：向 DFU 设备触发切换（真正就绪由随后的 wait_app 判定）。"""
