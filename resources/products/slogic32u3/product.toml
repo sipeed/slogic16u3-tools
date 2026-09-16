@@ -1,8 +1,8 @@
-# SLogic32U3 产品档案
+# SLogic32U3 产品档案（公开，入库）
 schema_version = 1
 
 [product]
-id = "slogic32u3"
+id = "slogic32u3"           # 必须与所在目录名一致
 display_name = "SLogic32U3"
 
 [usb]
@@ -49,7 +49,7 @@ freq_tol_pct = 5.0
 duty_tol_pp = 5.0
 
 [firmware]
-app = "firmware/slogic32u3/app.bin"
+app = "firmware/app.bin"     # 相对本产品目录（gitignore）
 app_flash_addr = 0x0                 # TBD：随硬件确认修改
 verify = true
 
@@ -57,9 +57,6 @@ verify = true
 # 32U3 支持 USB 控制传输 RECONFIG（协议规范 0x30 设备管理扩展）自动双向切换
 # DFU<->APP：wValue=1 触发、wIndex=0x5253。工具在切换步骤直接下发，无需人工。
 method = "usb_reconfig"
-
-[blank_flash]
-dir = "blank_flash/slogic32u3"
 
 [timeouts]
 wait_dfu_device_s = 30

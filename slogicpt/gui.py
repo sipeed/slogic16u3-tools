@@ -445,24 +445,19 @@ class ProductionTestGUI(QWidget):
             item = self.aux_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
-        # 非流水线的 manifest 步骤（如 eFuse Lock）需外置 JTAG 烧录器，统一收进
-        # programmer_aux_buttons，由 _update_enablement 按 programmer_present 门控。
+        # eFuse 写锁需外置 JTAG 烧录器，收进 programmer_aux_buttons，由
+        # _update_enablement 按 programmer_present + eFuse 状态门控。
         self.programmer_aux_buttons: list[QPushButton] = []
         self.efuse_btn: QPushButton | None = None
         self._efuse_label = "eFuse Lock"
-        for step in (p.blank_flash_steps or []):
-            if step.in_pipeline:
-                continue
-            is_lock = step.name == "lock"
-            # eFuse 按钮的前缀图标由 _update_efuse_btn 按锁定状态动态设置
-            btn = QPushButton(step.label if is_lock else f"🔒 {step.label}")
+        if p.programmer is not None and p.programmer.efuse_key_file is not None:
+            # 前缀图标由 _update_efuse_btn 按锁定状态动态设置
+            btn = QPushButton(self._efuse_label)
             btn.setToolTip("产线终检操作，谨慎执行（需外置烧录器）")
-            btn.clicked.connect(lambda _, s=step: self.run_manifest_step(s))
+            btn.clicked.connect(self.run_efuse_lock)
             self.aux_layout.addWidget(btn)
             self.programmer_aux_buttons.append(btn)
-            if is_lock:
-                self.efuse_btn = btn
-                self._efuse_label = step.label
+            self.efuse_btn = btn
         # DFU<->APP 手动切换：文案与方向按当前设备模式在 _update_switch_btn 中更新；
         # 启用状态另行管理（需检测到设备才可用）。
         self.switch_btn = QPushButton("🔀 DFU ↔ APP 切换")
@@ -594,18 +589,15 @@ class ProductionTestGUI(QWidget):
         dfu_present = mode == Mode.DFU
         app_present = mode == Mode.APP
         prog_ok = self.programmer_present is True
-        has_blank = bool(p.blank_flash_steps) and any(
-            s.in_pipeline for s in p.blank_flash_steps)
+        has_blank = p.programmer is not None and p.programmer.flash is not None
         seq_ready = (self.sigrok is not None and p.dfu_pid is not None
-                     and fw_ok and p.blank_flash_steps is not None
-                     and (not has_blank or prog_ok))
+                     and fw_ok and (not has_blank or prog_ok))
         self.start_btn.setEnabled(not busy and seq_ready)
         if not seq_ready:
             missing = []
             if self.sigrok is None: missing.append("sigrok-cli")
             if p.dfu_pid is None: missing.append("dfu_pid")
             if not fw_ok: missing.append("app 固件")
-            if p.blank_flash_steps is None: missing.append("blank_flash manifest")
             if has_blank and not prog_ok: missing.append("外置烧录器（点 🔄 扫描）")
             self.start_btn.setToolTip("缺少: " + ", ".join(missing))
         else:
@@ -635,9 +627,24 @@ class ProductionTestGUI(QWidget):
             row.run_btn.setToolTip(tip if not ok else "")
         prog_tip = ("产线终检操作，谨慎执行" if prog_ok
                     else "需要连接外置烧录器：点顶栏 🔄 扫描")
+        efuse_btn = getattr(self, "efuse_btn", None)
         for btn in getattr(self, "programmer_aux_buttons", []):
-            btn.setEnabled(not busy and prog_ok)
-            btn.setToolTip(prog_tip)
+            if btn is efuse_btn:
+                # eFuse 写锁不可逆：仅"未锁"允许点击；"已锁"/"未知"一律禁用
+                ok = prog_ok and self.efuse_status == "unlocked"
+                if not prog_ok:
+                    tip = "需要连接外置烧录器：点顶栏 🔄 扫描"
+                elif self.efuse_status == "locked":
+                    tip = "eFuse 已锁定，不可重复写入（不可逆）"
+                elif self.efuse_status == "unlocked":
+                    tip = "写入并锁定 AES 密钥（不可逆）"
+                else:
+                    tip = "eFuse 状态未知：请先点 🔄 扫描确认为未锁"
+                btn.setEnabled(not busy and ok)
+                btn.setToolTip(tip)
+            else:
+                btn.setEnabled(not busy and prog_ok)
+                btn.setToolTip(prog_tip)
         if hasattr(self, "reflash_btn"):
             self.reflash_btn.setEnabled(not busy and p.dfu_pid is not None and fw_ok)
         self.sampling_btn.setEnabled(
@@ -705,7 +712,8 @@ class ProductionTestGUI(QWidget):
             return
         self.log_signal.emit(f"===== 一键全流程: {p.display_name} =====")
         self._start(pipeline_mod.Pipeline.full_test(
-            p, self.sigrok, self._callbacks(), self._override_firmware()),
+            p, self.sigrok, self._callbacks(), self._override_firmware(),
+            cable_index=self.probe_cable),
             reset_rows=True)
 
     def run_single_step(self, step_id: str):
@@ -715,18 +723,19 @@ class ProductionTestGUI(QWidget):
         row = self.step_rows.get(step_id)
         self.log_signal.emit(f"===== 单步执行: {row.label_text if row else step_id} =====")
         self._start(pipeline_mod.Pipeline.single_step(
-            p, self.sigrok, self._callbacks(), step_id, self._override_firmware()),
+            p, self.sigrok, self._callbacks(), step_id, self._override_firmware(),
+            cable_index=self.probe_cable),
             reset_rows=False)
 
-    def run_manifest_step(self, step):
+    def run_efuse_lock(self):
         p = self.profile
         if p is None:
             return
         # after a successful lock, auto re-probe so the eFuse icon flips to 🔒
-        self._rescan_after = step.name == "lock"
-        self.log_signal.emit(f"===== 辅助操作: {step.label} =====")
-        self._start(pipeline_mod.Pipeline.manifest_step(p, self._callbacks(), step),
-                    reset_rows=False)
+        self._rescan_after = True
+        self.log_signal.emit("===== 辅助操作: eFuse 写入并锁定 =====")
+        self._start(pipeline_mod.Pipeline.efuse_lock(
+            p, self._callbacks(), cable_index=self.probe_cable), reset_rows=False)
 
     def run_probe(self):
         """Manual 🔄 scan: probe the external JTAG programmer (read-only) and
@@ -734,13 +743,13 @@ class ProductionTestGUI(QWidget):
         p = self.profile
         if p is None:
             return
-        if p.probe is None:
-            self.log_signal.emit("本产品未配置 [probe]，无外置烧录器探测能力。")
+        if p.programmer is None:
+            self.log_signal.emit("本产品未配置 programmer.toml，无外置烧录器能力。")
             return
         self.scan_btn.setEnabled(False)
         self.scan_btn.setText("⏳")
         self.log_signal.emit(f"===== 扫描外置烧录器: {p.display_name} =====")
-        cfg = p.probe
+        cfg = p.programmer
 
         def worker():
             try:

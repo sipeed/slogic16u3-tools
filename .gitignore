@@ -9,16 +9,12 @@ resources/bin/*
 !resources/bin/.gitkeep
 
 # 固件与工厂产测专用资源：只在工位本地放置，禁止入库/公开
-resources/firmware/*/*.bin
-resources/blank_flash/*/efuse_lock.*
-resources/blank_flash/*/gowin_flash.*
-resources/blank_flash/*/gowin_switch.*
-resources/blank_flash/*/*.fs
-resources/blank_flash/*/*.bin
+# 每产品目录 resources/products/<id>/：product.toml + programmer.toml 公开入库，
+# firmware/ 下的镜像/密钥与 DFU<->APP 切换脚本为工厂本地，禁止入库/公开。
+resources/products/*/firmware/*.bin
+resources/products/*/firmware/*.fs
+resources/products/*/gowin_switch.*
 # eFuse AES 密钥（机密，绝不入库）
-resources/blank_flash/*/*.ekey
-resources/blank_flash/*/efuse_key.txt
+resources/products/*/firmware/*.ekey
+resources/products/*/firmware/efuse_key.txt
 
-# 内部协议规范（参考用，勿入库/公开）
-USB LA 协议规范.tar.gz
-USB LA 协议规范/

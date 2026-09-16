@@ -1,0 +1,30 @@
+# SLogic32U3 外置烧录器命令声明（公开，入库）
+#
+# 探测 / eFuse 读 / 烧空板 / eFuse 写锁 —— 四种操作都是同一个 `cli` argv 前缀
+# + 参数 + 资源文件（firmware/dfu.bin、firmware/efuse.ekey）。不再需要包装脚本。
+#
+# 组装规则（cli 之后按操作追加）：
+#   探测/读器件   --device D --cable-index c --run 0
+#   eFuse 读      --device D --cable-index c --keyread
+#   烧空板        --device D --cable-index c --run <auto> --fsFile <image> --spiaddr <addr>
+#   eFuse 写+锁   --device D --cable-index c --keywritefile --keyFile <key_file> --keylock
+schema_version = 1
+
+[programmer]
+# cli：所有操作的 argv 前缀，第一元素是可执行文件（相对路径按本目录解析）。
+# 缺省则自动用 resources/bin/ 下的 Gowin-Programmer*.AppImage + --programmer-cli。
+# Linux（二次打包 AppImage）：
+# cli = ["../../bin/Gowin-Programmer-1.9.12.03-2712-x86_64.AppImage", "--programmer-cli"]
+# Windows 产线：
+# cli_windows = ["C:/Gowin/Programmer/bin/programmer_cli.exe"]
+device = "GW5AT-60B"               # SLogic32U3 = Gowin GW5AT-60B（IDCODE 0x0001481B）
+cable_candidates = [5, 4, 1]       # 逐个试 --cable-index：5=Gowin USB Cable WINUSB（实测本机）
+timeout_s = 30
+
+[programmer.flash]                 # 烧空板：把 DFU 镜像写入外部 SPI Flash，上电从此启动
+image = "firmware/dfu.bin"         # 32U3 工具链导出原始 .bin（非 .fs 位流）（工厂放置，gitignore）
+# run 由扩展名自动推导：.bin->56（C Bin），.fs->54（Arora V 位流）。如需覆盖再加 run =
+spiaddr = 0x000000                 # 外部 SPI Flash 启动地址
+
+[programmer.efuse]                 # eFuse AES 密钥写入 + 锁定（不可逆）
+key_file = "firmware/efuse.ekey"   # Gowin .ekey 密钥文件（机密，绝不入库）

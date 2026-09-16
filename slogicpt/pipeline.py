@@ -17,12 +17,13 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Callable
 
-from . import blank_flash as blank_flash_mod
 from . import device_watch
+from . import extcmd
 from . import flasher
 from . import mode_switch as mode_switch_mod
+from . import programmer as programmer_mod
 from . import waveform
-from .profiles import BlankFlashStep, OUTPUT_DIR, ProductProfile, format_rate
+from .profiles import OUTPUT_DIR, ProductProfile, format_rate
 from .sigrok import CaptureError, SigrokCli
 
 
@@ -60,9 +61,8 @@ def sequence_plan(profile: ProductProfile) -> list[tuple[str, str]]:
     """(id, label) of the linear production sequence, without a Pipeline
     instance -- the GUI builds its step list from this so ids always match."""
     plan: list[tuple[str, str]] = []
-    for s in (profile.blank_flash_steps or []):
-        if s.in_pipeline:
-            plan.append((f"blank:{s.name}", f"烧空板 · {s.label}"))
+    if profile.programmer is not None and profile.programmer.flash is not None:
+        plan.append(("blank:flash", "烧空板 · 烧写 DFU 镜像"))
     plan.append(("wait_dfu", "等待 DFU 设备"))
     plan.append(("flash_app", "DFU 烧写应用固件"))
     plan.append(("switch_app", "切换到 APP 模式"))
@@ -89,10 +89,9 @@ class Pipeline:
 
     def _sequence_defs(self) -> list[StepDef]:
         defs: list[StepDef] = []
-        for s in (self.profile.blank_flash_steps or []):
-            if s.in_pipeline:
-                defs.append(StepDef(f"blank:{s.name}", f"烧空板 · {s.label}",
-                                    lambda s=s: self._run_blank_step(s)))
+        if self.profile.programmer is not None and self.profile.programmer.flash is not None:
+            defs.append(StepDef("blank:flash", "烧空板 · 烧写 DFU 镜像",
+                                self._flash_blank))
         defs.append(StepDef("wait_dfu", "等待 DFU 设备", self._wait_dfu))
         defs.append(StepDef("flash_app", "DFU 烧写应用固件", self._flash_app))
         defs.append(StepDef("switch_app", "切换到 APP 模式", self._switch_to_app))
@@ -110,19 +109,21 @@ class Pipeline:
     @classmethod
     def full_test(cls, profile: ProductProfile, sigrok: SigrokCli,
                   callbacks: PipelineCallbacks,
-                  firmware_path=None) -> "Pipeline":
+                  firmware_path=None, cable_index: int | None = None) -> "Pipeline":
         p = cls(profile, sigrok, callbacks, [])
         p._firmware_override = firmware_path
+        p._cable_index = cable_index
         p.steps = p._sequence_defs()
         return p
 
     @classmethod
     def single_step(cls, profile: ProductProfile, sigrok: SigrokCli | None,
                     callbacks: PipelineCallbacks, step_id: str,
-                    firmware_path=None) -> "Pipeline":
+                    firmware_path=None, cable_index: int | None = None) -> "Pipeline":
         """Manual mode: run exactly one sequence step by id."""
         p = cls(profile, sigrok, callbacks, [])
         p._firmware_override = firmware_path
+        p._cable_index = cable_index
         matches = [d for d in p._sequence_defs() if d.id == step_id]
         if not matches:
             raise ValueError(f"未知步骤: {step_id}")
@@ -130,12 +131,12 @@ class Pipeline:
         return p
 
     @classmethod
-    def manifest_step(cls, profile: ProductProfile,
-                      callbacks: PipelineCallbacks, step) -> "Pipeline":
-        """Any manifest step (also non-pipeline ones, e.g. eFuse lock)."""
+    def efuse_lock(cls, profile: ProductProfile, callbacks: PipelineCallbacks,
+                   cable_index: int | None = None) -> "Pipeline":
+        """eFuse AES-key write + lock (irreversible), via the programmer CLI."""
         p = cls(profile, None, callbacks, [])
-        p.steps = [StepDef(f"blank:{step.name}", step.label,
-                           lambda: p._run_blank_step(step))]
+        p._cable_index = cable_index
+        p.steps = [StepDef("efuse:lock", "eFuse 写入并锁定", p._efuse_lock)]
         return p
 
     @classmethod
@@ -229,9 +230,15 @@ class Pipeline:
     def _log(self, msg: str) -> None:
         self.cb.on_log(msg)
 
-    def _run_blank_step(self, step) -> bool:
-        return blank_flash_mod.run_step(
-            step, self.profile.blank_flash_dir, self._log, self.cancel)
+    _cable_index = None    # external-programmer cable index (from the GUI probe)
+
+    def _flash_blank(self) -> bool:
+        return programmer_mod.flash(
+            self.profile.programmer, self._cable_index, self._log, self.cancel)
+
+    def _efuse_lock(self) -> bool:
+        return programmer_mod.efuse_lock(
+            self.profile.programmer, self._cable_index, self._log, self.cancel)
 
     def _wait_mode(self, pid: int, timeout_s: float, what: str) -> bool:
         self._log(f"等待 {what} 设备 ({self.profile.vid:#06x}:{pid:#06x})...")
@@ -300,13 +307,10 @@ class Pipeline:
         if ms.method == "script":
             # 16U3：外置 JTAG + gowin_cli 脚本，追加方向参数 dfu2app / app2dfu
             direction = "dfu2app" if to_what == "APP" else "app2dfu"
-            step = BlankFlashStep(
-                name=f"switch_{direction}", label=f"切换到 {to_what}",
-                argv=list(ms.argv) + [direction], timeout_s=ms.timeout_s,
-                in_pipeline=True)
             self._log(f"运行外置 JTAG 脚本切换到 {to_what} 模式...")
-            return blank_flash_mod.run_step(
-                step, self.profile.blank_flash_dir, self._log, self.cancel)
+            return extcmd.run_command(
+                list(ms.argv) + [direction], self.profile.product_dir,
+                ms.timeout_s, f"switch_{direction}", self._log, self.cancel)
         # method == "manual"：工具不自动切换，仅提示，真正的模式就绪由随后的
         # 等待步骤（含超时人工提示）确认。
         self._log(f"{self.profile.display_name}: 需人工切换到 {to_what} 模式"

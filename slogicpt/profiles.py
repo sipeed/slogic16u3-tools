@@ -1,9 +1,18 @@
 """Product profile loading / validation / resource self-check.
 
 All product differences (VID/PID, channels, bandwidth, expected signal,
-firmware paths, blank-flash commands, timeouts) live in
-resources/products/*.toml.  Adding a new product requires only a new TOML
-file plus firmware/blank-flash resources -- no code changes.
+firmware paths, programmer commands, timeouts) live in
+resources/products/<id>/.  Each product is a directory:
+
+    resources/products/<id>/
+        product.toml      # profile (public)
+        programmer.toml    # external programmer commands (public)
+        firmware/          # app.bin, dfu.{fs,bin}, efuse.ekey (factory, gitignored)
+
+Adding a new product requires only a new directory + resources -- no code
+changes.  Every blank-flash / eFuse operation is driven by a single
+`cli` argv prefix declared in programmer.toml (see slogicpt/programmer.py);
+there are no wrapper shell scripts.
 """
 from __future__ import annotations
 
@@ -11,7 +20,7 @@ import platform as platform_mod
 import re
 import sys
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
@@ -64,23 +73,31 @@ class CaptureTest:
     samples: str
 
 
-@dataclass(frozen=True)
-class BlankFlashStep:
-    name: str
-    label: str
-    argv: list[str]
-    timeout_s: float
-    in_pipeline: bool
+# 镜像扩展名 -> Gowin exFlash op：.fs=Arora V 位流(54)，.bin=raw C Bin(56)。
+# programmer.toml 只需给 image，run 由此自动推导（也可用 flash.run 显式覆盖）。
+RUN_BY_EXT = {".fs": 54, ".bin": 56}
 
 
 @dataclass(frozen=True)
-class Probe:
-    """外置 JTAG 烧录器探测配置：只读地读器件码 / eFuse 锁定位（绝不写芯片），
-    用于判定"外置烧录器是否连着器件"并显示 eFuse 锁定状态。缺省则该产品无探测能力。"""
+class FlashOp:
+    """烧空板：把 DFU 镜像写入外部 SPI Flash 的 Gowin CLI 参数。
+    组装为 `<cli> --device D --cable-index c --run <run> --fsFile <image> --spiaddr <addr>`。"""
+    run: int                         # Gowin op：54=.fs(Arora V)  56=C Bin(raw .bin)，按扩展名自动推导
+    image: Path                      # DFU 镜像绝对路径（.fs 或 .bin）
+    spiaddr: int                     # 外部 SPI Flash 起始地址
+
+
+@dataclass(frozen=True)
+class Programmer:
+    """外置 JTAG 烧录器命令声明（来自 programmer.toml）。一个 `cli` argv 前缀
+    驱动全部操作：探测（--run 0）、eFuse 读（--keyread）、烧空板（FlashOp）、
+    eFuse 写+锁（--keywritefile --keyFile <key> --keylock）。缺省则无烧录能力。"""
+    cli: list[str]                   # argv 前缀，如 [<appimage>, "--programmer-cli"] 或 ["programmer_cli.exe"]
     device: str                      # Gowin --device 型号，如 GW5AT-15A / GW5AT-60B
     cable_candidates: list[int]      # 逐个尝试的 --cable-index，首个读到器件的即用
-    app: Path | None = None          # 可选，覆盖默认 AppImage（相对 manifest 目录解析）
-    timeout_s: float = 30
+    timeout_s: float
+    flash: FlashOp | None            # None -> 未声明 [programmer.flash]，无烧空板
+    efuse_key_file: Path | None      # None -> 未声明 [programmer.efuse]，无 eFuse 写锁
 
 
 @dataclass(frozen=True)
@@ -90,7 +107,7 @@ class ModeSwitch:
                      模式设备出现。
     - "script":      工具运行脚本切换（如 16U3 外置 JTAG + gowin_cli），工具会向
                      argv 追加方向参数 "dfu2app" / "app2dfu"。脚本未放置时自动回退
-                     为人工提示（即"外置 JTAG 或工人手动"）。
+                     为人工提示（即"外置 JTAG 或工人手动"）。相对路径按产品目录解析。
     - "usb_reconfig": 工具用 USB 控制传输 RECONFIG（见"USB LA 协议规范"0x30）触发
                      FPGA 重配置，双向自动切换（如 32U3）。
     """
@@ -152,9 +169,8 @@ class ProductProfile:
     app_flash_addr: int
     verify_after_flash: bool
     mode_switch: ModeSwitch             # DFU<->APP 切换方式
-    blank_flash_dir: Path
-    blank_flash_steps: list[BlankFlashStep] | None   # None -> manifest missing/bad
-    probe: Probe | None              # None -> manifest 未声明 [probe]，无外置烧录器探测
+    product_dir: Path                   # resources/products/<id>/（固件与切换脚本按此解析）
+    programmer: Programmer | None       # None -> programmer.toml 缺失/无效，无烧录能力
     timeouts: Timeouts
 
     @property
@@ -167,70 +183,86 @@ class ProductProfile:
         return [r for r in self.samplerates_hz if channels * r // 8 <= limit]
 
 
-def load_manifest(
-        manifest_dir: Path
-) -> tuple[list[BlankFlashStep] | None, Probe | None, list[str]]:
-    """Load blank-flash manifest.toml.  Returns (steps, probe, error strings)."""
-    manifest_file = manifest_dir / "manifest.toml"
-    if not manifest_file.is_file():
-        return None, None, [f"blank_flash manifest 缺失: {manifest_file}"]
-    errors: list[str] = []
+def _default_appimage() -> Path | None:
+    """resources/bin 下的 Gowin Programmer AppImage（cli 缺省时用）。"""
+    hits = sorted((RESOURCES_DIR / "bin").glob("Gowin-Programmer*.AppImage"))
+    return hits[0] if hits else None
+
+
+def _resolve_cli(raw_cli: list, product_dir: Path) -> list[str]:
+    """把 cli 的第一元素（可执行文件）按产品目录解析为绝对路径（相对路径且实际
+    存在时）；否则保留字面量（交给 PATH 查找，如 'openFPGALoader'）。"""
+    out = [str(x) for x in raw_cli]
+    if out:
+        first = Path(out[0])
+        if not first.is_absolute():
+            cand = (product_dir / first).resolve()
+            if cand.exists():
+                out[0] = str(cand)
+    return out
+
+
+def load_programmer(product_dir: Path) -> tuple[Programmer | None, list[str]]:
+    """Load programmer.toml.  Returns (programmer, error strings)."""
+    f = product_dir / "programmer.toml"
+    if not f.is_file():
+        return None, [f"programmer.toml 缺失: {f}"]
     try:
-        doc = tomllib.loads(manifest_file.read_text(encoding="utf-8"))
+        doc = tomllib.loads(f.read_text(encoding="utf-8"))
     except (tomllib.TOMLDecodeError, OSError) as e:
-        return None, None, [f"blank_flash manifest 解析失败: {manifest_file}: {e}"]
-
-    steps: list[BlankFlashStep] = []
-    for i, raw in enumerate(doc.get("steps", [])):
-        try:
-            # per-platform command: argv_linux / argv_windows / argv_darwin
-            # override the generic argv on that platform
-            argv_raw = raw.get(f"argv_{PLATFORM_KEY}", raw.get("argv"))
-            if argv_raw is None:
-                raise ValueError(
-                    f"缺少 argv（或本平台的 argv_{PLATFORM_KEY}）")
-            argv = [str(a) for a in argv_raw]
-            if not argv:
-                raise ValueError("argv 为空")
-            steps.append(BlankFlashStep(
-                name=str(raw["name"]),
-                label=str(raw.get("label", raw["name"])),
-                argv=argv,
-                timeout_s=float(raw.get("timeout_s", 120)),
-                in_pipeline=bool(raw.get("in_pipeline", False)),
-            ))
-        except (KeyError, ValueError, TypeError) as e:
-            errors.append(f"manifest steps[{i}] 无效: {e}")
-
-    probe: Probe | None = None
-    praw = doc.get("probe")
-    if praw is not None:
-        try:
-            app_rel = praw.get(f"app_{PLATFORM_KEY}", praw.get("app"))
-            app_path = (manifest_dir / str(app_rel)).resolve() if app_rel else None
-            cables = [int(c) for c in praw.get("cable_candidates", [])]
-            if not cables:
-                raise ValueError("cable_candidates 为空")
-            probe = Probe(
-                device=str(praw["device"]),
-                cable_candidates=cables,
-                app=app_path,
-                timeout_s=float(praw.get("timeout_s", 30)),
-            )
-        except (KeyError, ValueError, TypeError) as e:
-            errors.append(f"manifest [probe] 无效: {e}")
-
-    if not steps:
-        errors.append(f"manifest 无有效步骤: {manifest_file}")
-        return None, probe, errors
-    return steps, probe, errors
-
-
-def _parse_profile(path: Path) -> tuple[ProductProfile | None, list[Problem]]:
-    problems: list[Problem] = []
-    pid_for_log = path.stem
+        return None, [f"programmer.toml 解析失败: {f}: {e}"]
+    praw = doc.get("programmer")
+    if praw is None:
+        return None, [f"programmer.toml 缺 [programmer] 段: {f}"]
     try:
-        doc = tomllib.loads(path.read_text(encoding="utf-8"))
+        cli_raw = praw.get(f"cli_{PLATFORM_KEY}", praw.get("cli"))
+        if cli_raw:
+            cli = _resolve_cli(cli_raw, product_dir)
+        else:
+            app = _default_appimage()   # 缺省：resources/bin 的 AppImage + --programmer-cli
+            cli = [str(app), "--programmer-cli"] if app else []
+        cables = [int(c) for c in praw.get("cable_candidates", [])]
+        if not cables:
+            raise ValueError("cable_candidates 为空")
+
+        flash = None
+        fraw = praw.get("flash")
+        if fraw is not None:
+            image = (product_dir / str(fraw["image"])).resolve()
+            ext = image.suffix.lower()
+            run = int(fraw["run"]) if "run" in fraw else RUN_BY_EXT.get(ext)
+            if run is None:
+                raise ValueError(
+                    f"无法由镜像扩展名 {ext!r} 推导 run（仅支持 {'/'.join(RUN_BY_EXT)}），"
+                    f"请在 [programmer.flash] 显式指定 run")
+            flash = FlashOp(
+                run=run,
+                image=image,
+                spiaddr=int(fraw.get("spiaddr", 0)),
+            )
+        eraw = praw.get("efuse")
+        key_file = (product_dir / str(eraw["key_file"])).resolve() \
+            if eraw is not None else None
+
+        prog = Programmer(
+            cli=cli,
+            device=str(praw["device"]),
+            cable_candidates=cables,
+            timeout_s=float(praw.get("timeout_s", 30)),
+            flash=flash,
+            efuse_key_file=key_file,
+        )
+        return prog, []
+    except (KeyError, ValueError, TypeError) as e:
+        return None, [f"programmer.toml [programmer] 无效: {e}"]
+
+
+def _parse_profile(product_dir: Path) -> tuple[ProductProfile | None, list[Problem]]:
+    problems: list[Problem] = []
+    pid_for_log = product_dir.name
+    toml_file = product_dir / "product.toml"
+    try:
+        doc = tomllib.loads(toml_file.read_text(encoding="utf-8"))
     except (tomllib.TOMLDecodeError, OSError) as e:
         return None, [Problem("error", pid_for_log, f"档案解析失败: {e}")]
 
@@ -249,8 +281,8 @@ def _parse_profile(path: Path) -> tuple[ProductProfile | None, list[Problem]]:
         firmware = doc.get("firmware", {})
 
         prod_id = str(product["id"])
-        if prod_id != path.stem:
-            return err(f"product.id ({prod_id}) 与文件名 ({path.stem}) 不一致")
+        if prod_id != product_dir.name:
+            return err(f"product.id ({prod_id}) 与目录名 ({product_dir.name}) 不一致")
 
         dfu_pid = usb.get("dfu_pid")
         if dfu_pid is None:
@@ -294,7 +326,7 @@ def _parse_profile(path: Path) -> tuple[ProductProfile | None, list[Problem]]:
                 return err(f"测试点 {t.channels}ch@{format_rate(t.samplerate_hz)} 超出带宽 {max_bw}MB/s")
 
         app_rel = firmware.get("app")
-        app_firmware = (RESOURCES_DIR / app_rel).resolve() if app_rel else None
+        app_firmware = (product_dir / app_rel).resolve() if app_rel else None
 
         ms_raw = doc.get("mode_switch", {})
         ms_method = str(ms_raw.get("method", "manual"))
@@ -312,10 +344,8 @@ def _parse_profile(path: Path) -> tuple[ProductProfile | None, list[Problem]]:
         mode_switch = ModeSwitch(method=ms_method, argv=ms_argv,
                                  timeout_s=float(ms_raw.get("timeout_s", 60)))
 
-        bf_rel = doc.get("blank_flash", {}).get("dir", f"blank_flash/{prod_id}")
-        blank_flash_dir = (RESOURCES_DIR / bf_rel).resolve()
-        steps, probe, manifest_errors = load_manifest(blank_flash_dir)
-        for m in manifest_errors:
+        programmer, prog_errors = load_programmer(product_dir)
+        for m in prog_errors:
             problems.append(Problem("warning", prod_id, m))
 
         tmo = doc.get("timeouts", {})
@@ -353,9 +383,8 @@ def _parse_profile(path: Path) -> tuple[ProductProfile | None, list[Problem]]:
             app_flash_addr=int(firmware.get("app_flash_addr", 0)),
             verify_after_flash=bool(firmware.get("verify", True)),
             mode_switch=mode_switch,
-            blank_flash_dir=blank_flash_dir,
-            blank_flash_steps=steps,
-            probe=probe,
+            product_dir=product_dir,
+            programmer=programmer,
             timeouts=timeouts,
         )
         return profile, problems
@@ -365,17 +394,19 @@ def _parse_profile(path: Path) -> tuple[ProductProfile | None, list[Problem]]:
 
 
 def load_profiles(products_dir: Path = PRODUCTS_DIR) -> tuple[list[ProductProfile], list[Problem]]:
-    """Load every resources/products/*.toml.  A broken file yields a Problem
-    and is skipped without affecting other products."""
+    """Load every resources/products/<id>/product.toml.  A broken product yields
+    a Problem and is skipped without affecting other products."""
     profiles: list[ProductProfile] = []
     problems: list[Problem] = []
     if not products_dir.is_dir():
         return [], [Problem("error", None, f"产品档案目录不存在: {products_dir}")]
-    files = sorted(products_dir.glob("*.toml"))
-    if not files:
-        return [], [Problem("error", None, f"产品档案目录为空: {products_dir}，请放置 <product_id>.toml")]
-    for f in files:
-        profile, probs = _parse_profile(f)
+    dirs = sorted(d for d in products_dir.iterdir()
+                  if d.is_dir() and (d / "product.toml").is_file())
+    if not dirs:
+        return [], [Problem("error", None,
+                            f"产品档案目录为空: {products_dir}，请放置 <product_id>/product.toml")]
+    for d in dirs:
+        profile, probs = _parse_profile(d)
         problems.extend(probs)
         if profile is not None:
             profiles.append(profile)
@@ -413,14 +444,21 @@ def check_resources(profiles: list[ProductProfile],
             problems.append(Problem(
                 "warning", p.id,
                 f"应用固件缺失: {p.app_firmware}，DFU 与一键流程禁用"))
-        if p.blank_flash_steps:
-            for step in p.blank_flash_steps:
-                exe = Path(step.argv[-1])
-                candidate = p.blank_flash_dir / exe
-                if not exe.is_absolute() and "/" not in str(exe.parent) and not candidate.exists():
-                    problems.append(Problem(
-                        "warning", p.id,
-                        f"blank_flash 步骤 '{step.name}' 引用的文件缺失: {candidate}"))
+        prog = p.programmer
+        if prog is not None:
+            if not prog.cli:
+                problems.append(Problem(
+                    "warning", p.id,
+                    "未找到烧录器 CLI（programmer.cli 未声明且 resources/bin 无 Gowin AppImage），"
+                    "烧空板/eFuse 功能禁用"))
+            if prog.flash is not None and not prog.flash.image.is_file():
+                problems.append(Problem(
+                    "warning", p.id,
+                    f"烧空板 DFU 镜像缺失: {prog.flash.image}，烧空板禁用"))
+            if prog.efuse_key_file is not None and not prog.efuse_key_file.is_file():
+                problems.append(Problem(
+                    "warning", p.id,
+                    f"eFuse 密钥文件缺失: {prog.efuse_key_file}，eFuse 写锁禁用"))
     return problems
 
 
@@ -442,7 +480,15 @@ if __name__ == "__main__":
         ms = p.mode_switch
         ms_extra = f"  argv={ms.argv}" if ms.method == "script" else ""
         print(f"  模式切换: {ms.method}{ms_extra}")
-        print(f"  空板步骤: {[s.name for s in p.blank_flash_steps] if p.blank_flash_steps else '无 manifest'}")
+        if p.programmer is None:
+            print("  烧录器: 无 programmer.toml")
+        else:
+            pr = p.programmer
+            print(f"  烧录器: device={pr.device} cli={pr.cli} cables={pr.cable_candidates}")
+            if pr.flash:
+                print(f"    烧空板: run={pr.flash.run} image={pr.flash.image.name} spiaddr={pr.flash.spiaddr:#x}")
+            if pr.efuse_key_file:
+                print(f"    eFuse:  key_file={pr.efuse_key_file.name}")
     print(f"\n== {len(problems)} 个问题 ==")
     for prob in problems:
         print(f"  {prob}")

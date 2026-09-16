@@ -1,9 +1,10 @@
-# SLogic16U3 产品档案
-# 新增产品时复制本文件为 <product_id>.toml 并修改各字段，无需改代码。
+# SLogic16U3 产品档案（公开，入库）
+# 新增产品：复制本目录为 resources/products/<product_id>/，改 product.toml +
+# programmer.toml 各字段，把固件/密钥放进 firmware/，无需改代码。
 schema_version = 1
 
 [product]
-id = "slogic16u3"            # 必须与文件名一致，用于 firmware/blank_flash 目录寻址
+id = "slogic16u3"            # 必须与所在目录名一致
 display_name = "SLogic16U3"
 
 [usb]
@@ -40,22 +41,20 @@ freq_tol_pct = 5.0           # 频率相对容差 (%)
 duty_tol_pp = 5.0            # 占空比绝对容差（百分点）
 
 [firmware]
-app = "firmware/slogic16u3/app.bin"  # 相对 resources/ 目录；由管理员放置
-app_flash_addr = 0x0                 # 应用固件在 SPI Flash 中的烧写起始地址
-verify = true                        # 烧写后回读校验
+app = "firmware/app.bin"     # 相对本产品目录；由管理员放置（gitignore）
+app_flash_addr = 0x0         # 应用固件在 SPI Flash 中的烧写起始地址
+verify = true                # 烧写后回读校验
 
 [mode_switch]
 # DFU<->APP 切换方式。16U3 走外置 JTAG + gowin_cli 重配置（双向）。
 # method = "script"：工具运行切换脚本并自动追加方向参数 dfu2app / app2dfu；
-#   脚本（工厂放置，见保密边界）缺失时自动回退为人工提示，即"外置 JTAG 或工人手动"。
-# 相对路径按 blank_flash 目录解析；平台专用可写 argv_windows。
+#   脚本（工厂放置，见保密边界）缺失时自动回退为人工提示。相对路径按本产品目录解析。
+# 注：烧空板与 eFuse 写锁已改为 programmer.toml 声明式驱动，不再用脚本；
+#   仅此 DFU<->APP 切换仍是外部命令钩子（缺硬件事实，暂保留）。
 method = "script"
 argv = ["bash", "gowin_switch.sh"]
 argv_windows = ["cmd", "/c", "gowin_switch.bat"]
 timeout_s = 60
-
-[blank_flash]
-dir = "blank_flash/slogic16u3"       # 相对 resources/；目录内须有 manifest.toml
 
 [timeouts]
 wait_dfu_device_s = 30
