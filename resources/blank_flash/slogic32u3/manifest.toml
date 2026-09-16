@@ -4,6 +4,13 @@
 # 烧录可用 openFPGALoader（跨平台）替代 Gowin programmer；eFuse Lock 仍需 Gowin 工具。
 schema_version = 1
 
+# 外置 JTAG 烧录器探测（只读）：GUI 首行 🔄 按钮触发，直调 Gowin Programmer
+# --run 0（读器件码）+ --keyread（读 eFuse 锁定位）。绝不写芯片。缺省则无探测能力。
+[probe]
+device = "GW5AT-60B"               # SLogic32U3 = Gowin GW5AT-60B（IDCODE 0x0001481B）
+cable_candidates = [5, 4, 1]      # 逐个试 --cable-index：5=Gowin USB Cable WINUSB（实测本机）
+timeout_s = 30
+
 [[steps]]
 name = "flash"
 label = "Gowin Flash (DFU FW)"

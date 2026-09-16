@@ -19,6 +19,7 @@ All product specifics come from resources/products/*.toml.
 from __future__ import annotations
 
 import sys
+import threading
 import time
 from collections import Counter
 from pathlib import Path
@@ -34,6 +35,7 @@ from PyQt5.QtWidgets import (
 
 from . import device_watch
 from . import pipeline as pipeline_mod
+from . import programmer
 from .device_watch import Mode
 from .pipeline import StepStatus, sequence_plan
 from .profiles import (
@@ -135,6 +137,7 @@ class ProductionTestGUI(QWidget):
     prompt_signal = pyqtSignal(str)
     prompt_clear_signal = pyqtSignal()
     finished_signal = pyqtSignal(bool, str)
+    probe_signal = pyqtSignal(object)
 
     def __init__(self):
         super().__init__()
@@ -148,6 +151,12 @@ class ProductionTestGUI(QWidget):
         self.step_rows: dict[str, StepRow] = {}
         self._session_t0: float | None = None
         self._prompt_text = ""
+        # external JTAG programmer state, driven by the manual 🔄 scan button
+        # (None = not scanned yet); separate from USB DFU/APP auto-scan.
+        self.programmer_present: bool | None = None
+        self.efuse_status = "unknown"       # unknown | unlocked | locked
+        self.probe_cable: int | None = None
+        self._rescan_after = False          # auto re-probe after a lock succeeds
 
         self.init_ui()
         self.log_signal.connect(self.log_box.append)
@@ -155,6 +164,7 @@ class ProductionTestGUI(QWidget):
         self.prompt_signal.connect(self._on_prompt)
         self.prompt_clear_signal.connect(self._on_prompt_clear)
         self.finished_signal.connect(self._on_finished)
+        self.probe_signal.connect(self._on_probe)
 
         if not self.profiles:
             QMessageBox.critical(
@@ -185,6 +195,11 @@ class ProductionTestGUI(QWidget):
     def _build_header(self) -> QHBoxLayout:
         h = QHBoxLayout()
         h.setSpacing(8)
+        self.scan_btn = QPushButton("🔄")
+        self.scan_btn.setToolTip("扫描外置烧录器(JTAG)并读 eFuse 锁定状态")
+        self.scan_btn.setFixedWidth(36)
+        self.scan_btn.clicked.connect(self.run_probe)
+        h.addWidget(self.scan_btn)
         h.addWidget(QLabel("产品:"))
         self.product_combo = QComboBox()
         for p in self.profiles:
@@ -385,8 +400,14 @@ class ProductionTestGUI(QWidget):
         p = self.profile
         if p is None:
             return
+        # a different product means a different chip/cable -- the last scan's
+        # programmer/eFuse verdict no longer applies, so clear it.
+        self.programmer_present = None
+        self.efuse_status = "unknown"
+        self.probe_cable = None
         self._rebuild_sequence(p)
         self._rebuild_aux(p)
+        self._update_efuse_btn()
         self.channel_combo.blockSignals(True)
         self.channel_combo.clear()
         self.channel_combo.addItems([str(c) for c in p.channel_options])
@@ -424,17 +445,26 @@ class ProductionTestGUI(QWidget):
             item = self.aux_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
-        self.aux_buttons: list[QPushButton] = []
+        # 非流水线的 manifest 步骤（如 eFuse Lock）需外置 JTAG 烧录器，统一收进
+        # programmer_aux_buttons，由 _update_enablement 按 programmer_present 门控。
+        self.programmer_aux_buttons: list[QPushButton] = []
+        self.efuse_btn: QPushButton | None = None
+        self._efuse_label = "eFuse Lock"
         for step in (p.blank_flash_steps or []):
             if step.in_pipeline:
                 continue
-            btn = QPushButton(f"🔒 {step.label}")
-            btn.setToolTip("产线终检操作，谨慎执行")
+            is_lock = step.name == "lock"
+            # eFuse 按钮的前缀图标由 _update_efuse_btn 按锁定状态动态设置
+            btn = QPushButton(step.label if is_lock else f"🔒 {step.label}")
+            btn.setToolTip("产线终检操作，谨慎执行（需外置烧录器）")
             btn.clicked.connect(lambda _, s=step: self.run_manifest_step(s))
             self.aux_layout.addWidget(btn)
-            self.aux_buttons.append(btn)
+            self.programmer_aux_buttons.append(btn)
+            if is_lock:
+                self.efuse_btn = btn
+                self._efuse_label = step.label
         # DFU<->APP 手动切换：文案与方向按当前设备模式在 _update_switch_btn 中更新；
-        # 不加入 aux_buttons（其启用状态另行管理，需检测到设备才可用）。
+        # 启用状态另行管理（需检测到设备才可用）。
         self.switch_btn = QPushButton("🔀 DFU ↔ APP 切换")
         self.switch_btn.clicked.connect(self.run_switch_mode)
         self.aux_layout.addWidget(self.switch_btn)
@@ -442,8 +472,17 @@ class ProductionTestGUI(QWidget):
         self.reflash_btn.setToolTip("等待设备进入 DFU 模式（超时提示人工操作）→ 重写应用固件 → 等待应用模式")
         self.reflash_btn.clicked.connect(self.run_reflash)
         self.aux_layout.addWidget(self.reflash_btn)
-        self.aux_buttons.append(self.reflash_btn)
         self.aux_layout.addStretch(1)
+        self._update_efuse_btn()
+
+    def _update_efuse_btn(self):
+        """eFuse 按钮前缀图标反映锁定状态：⚪未知（无外置烧录器）/🔓未锁/🔒已锁。"""
+        btn = getattr(self, "efuse_btn", None)
+        if btn is None:
+            return
+        icon = {"locked": "🔒 已锁", "unlocked": "🔓 未锁"}.get(
+            self.efuse_status, "⚪ 未知")
+        btn.setText(f"{icon}  {self._efuse_label}")
 
     def _on_channels_changed(self, text: str):
         p = self.profile
@@ -541,7 +580,7 @@ class ProductionTestGUI(QWidget):
             self.sampling_btn.setEnabled(False)
             for row in self.step_rows.values():
                 row.run_btn.setEnabled(False)
-            for btn in getattr(self, "aux_buttons", []):
+            for btn in getattr(self, "programmer_aux_buttons", []):
                 btn.setEnabled(False)
             if hasattr(self, "reflash_btn"):
                 self.reflash_btn.setEnabled(False)
@@ -549,8 +588,17 @@ class ProductionTestGUI(QWidget):
             return
         fw_ok = (p.app_firmware is not None and p.app_firmware.is_file()) \
             or bool(self.fw_file_edit.text().strip())
+        # USB auto-scan drives DFU/APP presence; the manual 🔄 scan drives the
+        # external programmer state. Steps are gated by their real precondition.
+        mode = self._detected_mode(p)
+        dfu_present = mode == Mode.DFU
+        app_present = mode == Mode.APP
+        prog_ok = self.programmer_present is True
+        has_blank = bool(p.blank_flash_steps) and any(
+            s.in_pipeline for s in p.blank_flash_steps)
         seq_ready = (self.sigrok is not None and p.dfu_pid is not None
-                     and fw_ok and p.blank_flash_steps is not None)
+                     and fw_ok and p.blank_flash_steps is not None
+                     and (not has_blank or prog_ok))
         self.start_btn.setEnabled(not busy and seq_ready)
         if not seq_ready:
             missing = []
@@ -558,21 +606,38 @@ class ProductionTestGUI(QWidget):
             if p.dfu_pid is None: missing.append("dfu_pid")
             if not fw_ok: missing.append("app 固件")
             if p.blank_flash_steps is None: missing.append("blank_flash manifest")
+            if has_blank and not prog_ok: missing.append("外置烧录器（点 🔄 扫描）")
             self.start_btn.setToolTip("缺少: " + ", ".join(missing))
         else:
             self.start_btn.setToolTip("")
         for sid, row in self.step_rows.items():
-            if sid.startswith("capture"):
-                ok = self.sigrok is not None
-            elif sid in ("flash_app",):
-                ok = p.dfu_pid is not None and fw_ok
-            elif sid in ("wait_dfu", "switch_app"):
+            tip = ""
+            if sid.startswith("blank:"):
+                ok = prog_ok
+                if not ok: tip = "需要连接外置烧录器：点顶栏 🔄 扫描"
+            elif sid == "flash_app":
+                ok = p.dfu_pid is not None and fw_ok and dfu_present
+                if not dfu_present: tip = "需设备处于 DFU 模式（先完成上一步烧空板）"
+            elif sid == "switch_app":
+                ok = p.dfu_pid is not None and dfu_present
+                if not dfu_present: tip = "需设备处于 DFU 模式"
+            elif sid == "wait_dfu":
                 ok = p.dfu_pid is not None
+            elif sid == "wait_app":
+                ok = True
+            elif sid.startswith("capture"):
+                ok = self.sigrok is not None and app_present
+                if self.sigrok is not None and not app_present:
+                    tip = "需设备处于 APP 模式（先完成烧 APP 并等待 APP）"
             else:
                 ok = True
             row.run_btn.setEnabled(not busy and ok)
-        for btn in getattr(self, "aux_buttons", []):
-            btn.setEnabled(not busy)
+            row.run_btn.setToolTip(tip if not ok else "")
+        prog_tip = ("产线终检操作，谨慎执行" if prog_ok
+                    else "需要连接外置烧录器：点顶栏 🔄 扫描")
+        for btn in getattr(self, "programmer_aux_buttons", []):
+            btn.setEnabled(not busy and prog_ok)
+            btn.setToolTip(prog_tip)
         if hasattr(self, "reflash_btn"):
             self.reflash_btn.setEnabled(not busy and p.dfu_pid is not None and fw_ok)
         self.sampling_btn.setEnabled(
@@ -657,9 +722,35 @@ class ProductionTestGUI(QWidget):
         p = self.profile
         if p is None:
             return
+        # after a successful lock, auto re-probe so the eFuse icon flips to 🔒
+        self._rescan_after = step.name == "lock"
         self.log_signal.emit(f"===== 辅助操作: {step.label} =====")
         self._start(pipeline_mod.Pipeline.manifest_step(p, self._callbacks(), step),
                     reset_rows=False)
+
+    def run_probe(self):
+        """Manual 🔄 scan: probe the external JTAG programmer (read-only) and
+        read the eFuse lock state on a daemon thread."""
+        p = self.profile
+        if p is None:
+            return
+        if p.probe is None:
+            self.log_signal.emit("本产品未配置 [probe]，无外置烧录器探测能力。")
+            return
+        self.scan_btn.setEnabled(False)
+        self.scan_btn.setText("⏳")
+        self.log_signal.emit(f"===== 扫描外置烧录器: {p.display_name} =====")
+        cfg = p.probe
+
+        def worker():
+            try:
+                res = programmer.probe(cfg, self.log_signal.emit)
+            except Exception as e:  # never let the worker die silently
+                self.log_signal.emit(f"[probe] 异常: {e}")
+                res = programmer.ProbeResult(False, None, None, "unknown", f"异常: {e}")
+            self.probe_signal.emit(res)
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def run_switch_mode(self):
         p = self.profile
@@ -746,6 +837,19 @@ class ProductionTestGUI(QWidget):
     def _on_prompt_clear(self):
         self._prompt_text = ""
 
+    def _on_probe(self, res):
+        self.scan_btn.setEnabled(True)
+        self.scan_btn.setText("🔄")
+        self.programmer_present = res.programmer_present
+        self.efuse_status = res.efuse
+        self.probe_cable = res.cable_index
+        if res.programmer_present:
+            self.log_signal.emit(f"外置烧录器已连接：{res.detail}")
+        else:
+            self.log_signal.emit(f"未检测到外置烧录器：{res.detail}")
+        self._update_efuse_btn()
+        self._update_enablement()
+
     def _on_finished(self, ok: bool, report: str):
         elapsed = time.time() - self._session_t0 if self._session_t0 else 0
         fail_steps = [r.label_text for r in self.step_rows.values()
@@ -759,6 +863,10 @@ class ProductionTestGUI(QWidget):
         self.step_label.setText("")
         self.pipeline = None
         self._update_enablement()
+        if ok and self._rescan_after:
+            self.log_signal.emit("eFuse 已锁，自动复扫外置烧录器以刷新状态…")
+            QTimer.singleShot(400, self.run_probe)
+        self._rescan_after = False
 
     def _render_report(self, ok: bool, detail: str, elapsed: float):
         p = self.profile

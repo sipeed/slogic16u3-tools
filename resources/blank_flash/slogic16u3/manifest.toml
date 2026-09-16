@@ -10,6 +10,15 @@
 # eFuse Lock 无开源替代，仍需 Gowin 官方工具（Linux/Windows 均有 CLI）。
 schema_version = 1
 
+# 外置 JTAG 烧录器探测（只读）：GUI 首行 🔄 按钮触发，直调 Gowin Programmer
+# --run 0（读器件码）+ --keyread（读 eFuse 锁定位），据此判定"烧录器是否连着器件"
+# 并显示 eFuse 状态（未知/未锁/已锁）。绝不写芯片。缺省则无探测能力。
+[probe]
+device = "GW5AT-15A"               # SLogic16U3 = Gowin GW5AT-15A（IDCODE 0x0001681B）
+cable_candidates = [4, 1, 5]      # 逐个试 --cable-index：4=USB Debugger A，1=FT2CH，5=WINUSB
+timeout_s = 30
+# app = "../../bin/Gowin-Programmer-1.9.12.03-2712-x86_64.AppImage"  # 可选，覆盖默认
+
 [[steps]]
 name = "flash"
 label = "Gowin Flash (DFU FW)"

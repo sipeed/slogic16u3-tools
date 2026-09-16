@@ -74,7 +74,7 @@ argv = ["sh", "-c", "exit 3"]
 timeout_s = 5
 in_pipeline = false
 """, encoding="utf-8")
-        steps, errs = load_manifest(d)
+        steps, probe, errs = load_manifest(d)
         assert steps is not None and not errs, (steps, errs)
         results = {s.name: run_step(s, d, print) for s in steps}
         print("results:", results)

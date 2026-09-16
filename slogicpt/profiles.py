@@ -74,6 +74,16 @@ class BlankFlashStep:
 
 
 @dataclass(frozen=True)
+class Probe:
+    """外置 JTAG 烧录器探测配置：只读地读器件码 / eFuse 锁定位（绝不写芯片），
+    用于判定"外置烧录器是否连着器件"并显示 eFuse 锁定状态。缺省则该产品无探测能力。"""
+    device: str                      # Gowin --device 型号，如 GW5AT-15A / GW5AT-60B
+    cable_candidates: list[int]      # 逐个尝试的 --cable-index，首个读到器件的即用
+    app: Path | None = None          # 可选，覆盖默认 AppImage（相对 manifest 目录解析）
+    timeout_s: float = 30
+
+
+@dataclass(frozen=True)
 class ModeSwitch:
     """DFU<->APP 模式切换方式。
     - "manual":      工具不自动切换；切换步骤仅提示，由工人手动操作，随后等待目标
@@ -144,6 +154,7 @@ class ProductProfile:
     mode_switch: ModeSwitch             # DFU<->APP 切换方式
     blank_flash_dir: Path
     blank_flash_steps: list[BlankFlashStep] | None   # None -> manifest missing/bad
+    probe: Probe | None              # None -> manifest 未声明 [probe]，无外置烧录器探测
     timeouts: Timeouts
 
     @property
@@ -156,16 +167,18 @@ class ProductProfile:
         return [r for r in self.samplerates_hz if channels * r // 8 <= limit]
 
 
-def load_manifest(manifest_dir: Path) -> tuple[list[BlankFlashStep] | None, list[str]]:
-    """Load blank-flash manifest.toml.  Returns (steps, error strings)."""
+def load_manifest(
+        manifest_dir: Path
+) -> tuple[list[BlankFlashStep] | None, Probe | None, list[str]]:
+    """Load blank-flash manifest.toml.  Returns (steps, probe, error strings)."""
     manifest_file = manifest_dir / "manifest.toml"
     if not manifest_file.is_file():
-        return None, [f"blank_flash manifest 缺失: {manifest_file}"]
+        return None, None, [f"blank_flash manifest 缺失: {manifest_file}"]
     errors: list[str] = []
     try:
         doc = tomllib.loads(manifest_file.read_text(encoding="utf-8"))
     except (tomllib.TOMLDecodeError, OSError) as e:
-        return None, [f"blank_flash manifest 解析失败: {manifest_file}: {e}"]
+        return None, None, [f"blank_flash manifest 解析失败: {manifest_file}: {e}"]
 
     steps: list[BlankFlashStep] = []
     for i, raw in enumerate(doc.get("steps", [])):
@@ -188,10 +201,29 @@ def load_manifest(manifest_dir: Path) -> tuple[list[BlankFlashStep] | None, list
             ))
         except (KeyError, ValueError, TypeError) as e:
             errors.append(f"manifest steps[{i}] 无效: {e}")
+
+    probe: Probe | None = None
+    praw = doc.get("probe")
+    if praw is not None:
+        try:
+            app_rel = praw.get(f"app_{PLATFORM_KEY}", praw.get("app"))
+            app_path = (manifest_dir / str(app_rel)).resolve() if app_rel else None
+            cables = [int(c) for c in praw.get("cable_candidates", [])]
+            if not cables:
+                raise ValueError("cable_candidates 为空")
+            probe = Probe(
+                device=str(praw["device"]),
+                cable_candidates=cables,
+                app=app_path,
+                timeout_s=float(praw.get("timeout_s", 30)),
+            )
+        except (KeyError, ValueError, TypeError) as e:
+            errors.append(f"manifest [probe] 无效: {e}")
+
     if not steps:
         errors.append(f"manifest 无有效步骤: {manifest_file}")
-        return None, errors
-    return steps, errors
+        return None, probe, errors
+    return steps, probe, errors
 
 
 def _parse_profile(path: Path) -> tuple[ProductProfile | None, list[Problem]]:
@@ -282,7 +314,7 @@ def _parse_profile(path: Path) -> tuple[ProductProfile | None, list[Problem]]:
 
         bf_rel = doc.get("blank_flash", {}).get("dir", f"blank_flash/{prod_id}")
         blank_flash_dir = (RESOURCES_DIR / bf_rel).resolve()
-        steps, manifest_errors = load_manifest(blank_flash_dir)
+        steps, probe, manifest_errors = load_manifest(blank_flash_dir)
         for m in manifest_errors:
             problems.append(Problem("warning", prod_id, m))
 
@@ -323,6 +355,7 @@ def _parse_profile(path: Path) -> tuple[ProductProfile | None, list[Problem]]:
             mode_switch=mode_switch,
             blank_flash_dir=blank_flash_dir,
             blank_flash_steps=steps,
+            probe=probe,
             timeouts=timeouts,
         )
         return profile, problems
