@@ -9,7 +9,7 @@ display_name = "SLogic16U3"
 [usb]
 vid = 0x359F
 app_pid = 0x3031             # 应用固件运行时的 PID
-ota_pid = 0x30F1             # "SLogic DFU"，各产品共用（DFU 不区分型号）；未知时删除本行，GUI 提示 "OTA 未配置"
+dfu_pid = 0x30F1             # "SLogic DFU"，各产品共用（DFU 不区分型号）；未知时删除本行，GUI 提示 "DFU 未配置"
 
 [capture]
 driver = "sipeed-slogic-analyzer"   # sigrok 驱动名
@@ -45,8 +45,8 @@ app_flash_addr = 0x0                 # 应用固件在 SPI Flash 中的烧写起
 verify = true                        # 烧写后回读校验
 
 [mode_switch]
-# OTA<->APP 切换方式。16U3 走外置 JTAG + gowin_cli 重配置（双向）。
-# method = "script"：工具运行切换脚本并自动追加方向参数 ota2app / app2ota；
+# DFU<->APP 切换方式。16U3 走外置 JTAG + gowin_cli 重配置（双向）。
+# method = "script"：工具运行切换脚本并自动追加方向参数 dfu2app / app2dfu；
 #   脚本（工厂放置，见保密边界）缺失时自动回退为人工提示，即"外置 JTAG 或工人手动"。
 # 相对路径按 blank_flash 目录解析；平台专用可写 argv_windows。
 method = "script"
@@ -58,8 +58,8 @@ timeout_s = 60
 dir = "blank_flash/slogic16u3"       # 相对 resources/；目录内须有 manifest.toml
 
 [timeouts]
-wait_ota_device_s = 30
+wait_dfu_device_s = 30
 wait_app_device_s = 30
-ota_flash_s = 600
+dfu_flash_s = 600
 capture_s = 120
 blank_flash_step_s = 120

@@ -142,7 +142,7 @@ def flash_firmware(vid: int, pid: int, addr: int, firmware: bytes,
             flash.reset()
             dev_id = flash.read_id().hex()
             if dev_id in ('ffffff', '000000'):
-                raise RuntimeError(f"Flash 无响应（ID={dev_id}），请检查 OTA 连接后重试")
+                raise RuntimeError(f"Flash 无响应（ID={dev_id}），请检查 DFU 连接后重试")
         print("ID:", dev_id)
         print("UID:", flash.read_uid().hex())
 
@@ -174,7 +174,7 @@ def _parse_int(s: str) -> int:
 def main(argv=None) -> int:
     import argparse
     parser = argparse.ArgumentParser(
-        description="通过 OTA 模式 USB-SPI 通道烧写 SPI Flash 固件")
+        description="通过 DFU 模式 USB-SPI 通道烧写 SPI Flash 固件")
     parser.add_argument("firmware", help="固件 .bin 文件路径")
     parser.add_argument("--vid", type=_parse_int, default=0x359F, help="USB VID (默认 0x359F)")
     parser.add_argument("--pid", type=_parse_int, default=0x30F1, help="USB PID (默认 0x30F1)")

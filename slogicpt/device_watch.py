@@ -1,4 +1,4 @@
-"""USB device detection: which product, in which mode (APP / OTA).
+"""USB device detection: which product, in which mode (APP / DFU).
 
 The (vid, pid) -> (product, mode) map is derived entirely from the loaded
 product profiles -- no hardcoded IDs.
@@ -17,7 +17,7 @@ from .profiles import ProductProfile
 
 class Mode(Enum):
     APP = "APP"
-    OTA = "OTA"
+    DFU = "DFU"
 
 
 @dataclass(frozen=True)
@@ -34,8 +34,8 @@ def scan_devices(profiles: list[ProductProfile]) -> list[DeviceStatus]:
     found: list[DeviceStatus] = []
     for p in profiles:
         candidates: list[tuple[int, Mode]] = [(p.app_pid, Mode.APP)]
-        if p.ota_pid is not None:
-            candidates.append((p.ota_pid, Mode.OTA))
+        if p.dfu_pid is not None:
+            candidates.append((p.dfu_pid, Mode.DFU))
         for pid, mode in candidates:
             try:
                 if usb.core.find(idVendor=p.vid, idProduct=pid) is not None:

@@ -1,6 +1,6 @@
 """Production-test pipeline engine.
 
-Full flow:  blank_flash (in_pipeline steps) -> wait OTA device ->
+Full flow:  blank_flash (in_pipeline steps) -> wait DFU device ->
 flash app firmware (+verify) -> wait APP device -> capture+verify each
 configured test point -> PASS/FAIL summary.
 
@@ -63,8 +63,8 @@ def sequence_plan(profile: ProductProfile) -> list[tuple[str, str]]:
     for s in (profile.blank_flash_steps or []):
         if s.in_pipeline:
             plan.append((f"blank:{s.name}", f"烧空板 · {s.label}"))
-    plan.append(("wait_ota", "等待 OTA 设备"))
-    plan.append(("flash_app", "OTA 烧写应用固件"))
+    plan.append(("wait_dfu", "等待 DFU 设备"))
+    plan.append(("flash_app", "DFU 烧写应用固件"))
     plan.append(("switch_app", "切换到 APP 模式"))
     plan.append(("wait_app", "等待 APP 设备"))
     for i, t in enumerate(profile.capture_tests):
@@ -92,8 +92,8 @@ class Pipeline:
             if s.in_pipeline:
                 defs.append(StepDef(f"blank:{s.name}", f"烧空板 · {s.label}",
                                     lambda s=s: self._run_blank_step(s)))
-        defs.append(StepDef("wait_ota", "等待 OTA 设备", self._wait_ota))
-        defs.append(StepDef("flash_app", "OTA 烧写应用固件", self._flash_app))
+        defs.append(StepDef("wait_dfu", "等待 DFU 设备", self._wait_dfu))
+        defs.append(StepDef("flash_app", "DFU 烧写应用固件", self._flash_app))
         defs.append(StepDef("switch_app", "切换到 APP 模式", self._switch_to_app))
         defs.append(StepDef("wait_app", "等待 APP 设备", self._wait_app))
         for i, t in enumerate(self.profile.capture_tests):
@@ -155,15 +155,30 @@ class Pipeline:
     @classmethod
     def reflash(cls, profile: ProductProfile, callbacks: PipelineCallbacks,
                 firmware_path=None) -> "Pipeline":
-        """返修复烧：（若设备在 APP 模式则）切回 OTA -> 等待 OTA 设备（超时提示
+        """返修复烧：（若设备在 APP 模式则）切回 DFU -> 等待 DFU 设备（超时提示
         人工操作）-> 重写应用固件 -> 切换到 APP -> 等待应用模式回归。"""
         p = cls(profile, None, callbacks, [])
         p._firmware_override = firmware_path
-        p.steps = [StepDef("switch_ota", "切换到 OTA 模式", p._switch_to_ota),
-                   StepDef("wait_ota", "等待 OTA 设备", p._wait_ota),
-                   StepDef("flash_app", "OTA 烧写应用固件", p._flash_app),
+        p.steps = [StepDef("switch_dfu", "切换到 DFU 模式", p._switch_to_dfu),
+                   StepDef("wait_dfu", "等待 DFU 设备", p._wait_dfu),
+                   StepDef("flash_app", "DFU 烧写应用固件", p._flash_app),
                    StepDef("switch_app", "切换到 APP 模式", p._switch_to_app),
                    StepDef("wait_app", "等待 APP 设备", p._wait_app)]
+        return p
+
+    @classmethod
+    def switch_mode(cls, profile: ProductProfile,
+                    callbacks: PipelineCallbacks, *, to_mode: str) -> "Pipeline":
+        """辅助操作：在 DFU（烧录模式）与 APP（应用模式）之间手动切换当前
+        设备，切换后等待目标模式就绪。to_mode='app' 即 DFU->APP，'dfu' 即
+        APP->DFU（方向由 GUI 依当前设备模式决定）。"""
+        p = cls(profile, None, callbacks, [])
+        if to_mode == "app":
+            p.steps = [StepDef("switch_app", "切换到 APP 模式", p._switch_to_app),
+                       StepDef("wait_app", "等待 APP 设备", p._wait_app)]
+        else:
+            p.steps = [StepDef("switch_dfu", "切换到 DFU 模式", p._switch_to_dfu),
+                       StepDef("wait_dfu", "等待 DFU 设备", p._wait_dfu)]
         return p
 
     # ---- lifecycle -------------------------------------------------------
@@ -238,18 +253,18 @@ class Pipeline:
             self.cb.on_user_prompt_clear()
 
     def _switch_to_app(self) -> bool:
-        """OTA->APP：向 OTA 设备触发切换（真正就绪由随后的 wait_app 判定）。"""
-        if self.profile.ota_pid is None:
-            self._log("ota_pid 未配置，无法切换到 APP")
+        """DFU->APP：向 DFU 设备触发切换（真正就绪由随后的 wait_app 判定）。"""
+        if self.profile.dfu_pid is None:
+            self._log("dfu_pid 未配置，无法切换到 APP")
             return False
-        return self._switch(from_pid=self.profile.ota_pid, to_what="APP")
+        return self._switch(from_pid=self.profile.dfu_pid, to_what="APP")
 
-    def _switch_to_ota(self) -> bool:
-        """APP->OTA（复烧前置）：若设备当前在 APP 模式则触发切回 OTA；否则跳过，
-        交由 wait_ota 处理（人工插拔/上电）。"""
+    def _switch_to_dfu(self) -> bool:
+        """APP->DFU（复烧前置）：若设备当前在 APP 模式则触发切回 DFU；否则跳过，
+        交由 wait_dfu 处理（人工插拔/上电）。"""
         if device_watch.find_pid(self.profile.vid, self.profile.app_pid):
-            return self._switch(from_pid=self.profile.app_pid, to_what="OTA")
-        self._log("未检测到 APP 设备，跳过自动切换，直接等待 OTA")
+            return self._switch(from_pid=self.profile.app_pid, to_what="DFU")
+        self._log("未检测到 APP 设备，跳过自动切换，直接等待 DFU")
         return True
 
     def _switch(self, from_pid: int, to_what: str) -> bool:
@@ -265,8 +280,8 @@ class Pipeline:
                 self._log(f"切换到 {to_what} 失败: {e}")
                 return False
         if ms.method == "script":
-            # 16U3：外置 JTAG + gowin_cli 脚本，追加方向参数 ota2app / app2ota
-            direction = "ota2app" if to_what == "APP" else "app2ota"
+            # 16U3：外置 JTAG + gowin_cli 脚本，追加方向参数 dfu2app / app2dfu
+            direction = "dfu2app" if to_what == "APP" else "app2dfu"
             step = BlankFlashStep(
                 name=f"switch_{direction}", label=f"切换到 {to_what}",
                 argv=list(ms.argv) + [direction], timeout_s=ms.timeout_s,
@@ -280,12 +295,12 @@ class Pipeline:
                   "（外置 JTAG + gowin_cli），随后自动等待设备就绪")
         return True
 
-    def _wait_ota(self) -> bool:
-        if self.profile.ota_pid is None:
-            self._log(f"{self.profile.display_name}: ota_pid 未配置")
+    def _wait_dfu(self) -> bool:
+        if self.profile.dfu_pid is None:
+            self._log(f"{self.profile.display_name}: dfu_pid 未配置")
             return False
-        return self._wait_mode(self.profile.ota_pid,
-                               self.profile.timeouts.wait_ota_device_s, "OTA")
+        return self._wait_mode(self.profile.dfu_pid,
+                               self.profile.timeouts.wait_dfu_device_s, "DFU")
 
     def _wait_app(self) -> bool:
         return self._wait_mode(self.profile.app_pid,
@@ -295,20 +310,20 @@ class Pipeline:
 
     def _flash_app(self) -> bool:
         fw = self._firmware_override or self.profile.app_firmware
-        if fw is None or self.profile.ota_pid is None:
-            self._log("固件或 ota_pid 未配置，无法烧写")
+        if fw is None or self.profile.dfu_pid is None:
+            self._log("固件或 dfu_pid 未配置，无法烧写")
             return False
         try:
             flasher.flash_app_firmware(
-                vid=self.profile.vid, pid=self.profile.ota_pid,
+                vid=self.profile.vid, pid=self.profile.dfu_pid,
                 addr=self.profile.app_flash_addr, firmware=fw,
                 verify=self.profile.verify_after_flash,
                 log_cb=self._log, cancel=self.cancel)
-            self.report_lines.append(f"OTA 烧写: OK ({fw})")
+            self.report_lines.append(f"DFU 烧写: OK ({fw})")
             return True
         except flasher.FlashError as e:
             self._log(str(e))
-            self.report_lines.append(f"OTA 烧写: FAIL ({e})")
+            self.report_lines.append(f"DFU 烧写: FAIL ({e})")
             return False
 
     def _capture_all(self) -> bool:
@@ -429,7 +444,7 @@ if __name__ == "__main__":
     print("== 取消应立刻结束等待 ==")
     done.clear()
     p2 = Pipeline(profile, None, cb, [])
-    p2.steps = [StepDef("wait", "Wait", lambda: p2._wait_mode(0x7FFF, 1.0, "OTA"))]
+    p2.steps = [StepDef("wait", "Wait", lambda: p2._wait_mode(0x7FFF, 1.0, "DFU"))]
     threading.Timer(2.5, p2.request_cancel).start()
     t0 = time.time()
     p2.start(); done.wait(15)

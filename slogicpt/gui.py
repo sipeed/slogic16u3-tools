@@ -298,11 +298,11 @@ class ProductionTestGUI(QWidget):
         pv.addWidget(self.expected_table, 1)
         fw_row = QHBoxLayout()
         fw_row.addWidget(QLabel("固件覆盖:"))
-        self.ota_file_edit = QLineEdit()
-        self.ota_file_edit.setPlaceholderText("默认使用产品档案固件")
+        self.fw_file_edit = QLineEdit()
+        self.fw_file_edit.setPlaceholderText("默认使用产品档案固件")
         fw_btn = QPushButton("…"); fw_btn.setFixedWidth(30)
-        fw_btn.clicked.connect(self.select_ota_file)
-        fw_row.addWidget(self.ota_file_edit, 1)
+        fw_btn.clicked.connect(self.select_fw_file)
+        fw_row.addWidget(self.fw_file_edit, 1)
         fw_row.addWidget(fw_btn)
         pv.addLayout(fw_row)
         param_page.setLayout(pv)
@@ -394,8 +394,8 @@ class ProductionTestGUI(QWidget):
         self.channel_combo.blockSignals(False)
         self.samples_edit.setText(p.default_samples)
         self.volt_edit.setText(f"{p.voltage_threshold_v:g}")
-        self.ota_file_edit.setText("")
-        self.ota_file_edit.setPlaceholderText(
+        self.fw_file_edit.setText("")
+        self.fw_file_edit.setPlaceholderText(
             str(p.app_firmware) if p.app_firmware else "档案未配置固件，请手动选择")
         self._on_channels_changed(self.channel_combo.currentText())
         # profile-declared default rate for the default channel count
@@ -433,8 +433,13 @@ class ProductionTestGUI(QWidget):
             btn.clicked.connect(lambda _, s=step: self.run_manifest_step(s))
             self.aux_layout.addWidget(btn)
             self.aux_buttons.append(btn)
+        # DFU<->APP 手动切换：文案与方向按当前设备模式在 _update_switch_btn 中更新；
+        # 不加入 aux_buttons（其启用状态另行管理，需检测到设备才可用）。
+        self.switch_btn = QPushButton("🔀 DFU ↔ APP 切换")
+        self.switch_btn.clicked.connect(self.run_switch_mode)
+        self.aux_layout.addWidget(self.switch_btn)
         self.reflash_btn = QPushButton("♻ 复烧（返修）")
-        self.reflash_btn.setToolTip("等待设备进入 OTA 模式（超时提示人工操作）→ 重写应用固件 → 等待应用模式")
+        self.reflash_btn.setToolTip("等待设备进入 DFU 模式（超时提示人工操作）→ 重写应用固件 → 等待应用模式")
         self.reflash_btn.clicked.connect(self.run_reflash)
         self.aux_layout.addWidget(self.reflash_btn)
         self.aux_buttons.append(self.reflash_btn)
@@ -466,14 +471,23 @@ class ProductionTestGUI(QWidget):
         until the driver supports device selection)."""
         self.detected = device_watch.scan_devices(self.profiles)
         p = self.profile
+        conflict = self._conflicting_app_device(p)
+        if conflict is not None:
+            # 产品与在线设备不符：只提示切换到正确产品，其它操作在 _update_enablement 中禁用
+            self.device_status_label.setText(
+                f"⚠ 在线 {conflict}，与所选 {p.display_name} 不符："
+                "请切换到正确产品，或改插对应设备")
+            self.device_status_label.setStyleSheet("color:#c62828;")
+            self._update_enablement()
+            return
         mine = next((d for d in self.detected
                      if p is not None and d.profile.id == p.id), None)
-        # the DFU/OTA pid is shared across products, so one physical DFU
+        # the DFU pid is shared across products, so one physical DFU
         # device matches several profiles -- list it once, and name it
         # "SLogic DFU" when the product can't be told apart
-        shared_ota = {k for k, n in Counter(
-            (q.vid, q.ota_pid) for q in self.profiles
-            if q.ota_pid is not None).items() if n > 1}
+        shared_dfu = {k for k, n in Counter(
+            (q.vid, q.dfu_pid) for q in self.profiles
+            if q.dfu_pid is not None).items() if n > 1}
         mine_key = (mine.profile.vid, mine.pid) if mine else None
         others, seen = [], set()
         for d in self.detected:
@@ -481,7 +495,7 @@ class ProductionTestGUI(QWidget):
             if (p is not None and d.profile.id == p.id) or key == mine_key or key in seen:
                 continue
             seen.add(key)
-            others.append("SLogic DFU (OTA)" if key in shared_ota else str(d))
+            others.append("SLogic DFU" if key in shared_dfu else str(d))
         others_txt = f"　(另在线: {', '.join(others)})" if others else ""
         if mine is not None:
             self.device_status_label.setText(f"设备: {mine}{others_txt}")
@@ -498,24 +512,50 @@ class ProductionTestGUI(QWidget):
                 return d.mode
         return None
 
+    def _conflicting_app_device(self, p: ProductProfile | None):
+        """在线的、属于其它产品的 APP 模式设备。APP 的 PID 各产品唯一，故能明确
+        判定"插错产品"；DFU 的 PID 各产品共用、无法区分，永远不算冲突。"""
+        if p is None:
+            return None
+        for d in self.detected:
+            if d.mode == Mode.APP and d.profile.id != p.id:
+                return d
+        return None
+
     def _update_enablement(self):
         p = self.profile
         busy = self.pipeline is not None and self.pipeline.running
         self.stop_btn.setEnabled(busy)
-        self.product_combo.setEnabled(not busy)
+        self.product_combo.setEnabled(not busy)   # 产品选择始终可用，以便纠正不符
         if p is None:
             self.start_btn.setEnabled(False)
             self.sampling_btn.setEnabled(False)
             return
+        conflict = None if busy else self._conflicting_app_device(p)
+        if conflict is not None:
+            # 产品与在线设备不符：禁用一切操作，只允许（顶栏）切换到正确产品
+            self.start_btn.setEnabled(False)
+            self.start_btn.setToolTip(
+                f"在线设备为 {conflict.profile.display_name}（APP），与所选 "
+                f"{p.display_name} 不符——请切换到正确产品或改插设备")
+            self.sampling_btn.setEnabled(False)
+            for row in self.step_rows.values():
+                row.run_btn.setEnabled(False)
+            for btn in getattr(self, "aux_buttons", []):
+                btn.setEnabled(False)
+            if hasattr(self, "reflash_btn"):
+                self.reflash_btn.setEnabled(False)
+            self._update_switch_btn(p, allow=False)
+            return
         fw_ok = (p.app_firmware is not None and p.app_firmware.is_file()) \
-            or bool(self.ota_file_edit.text().strip())
-        seq_ready = (self.sigrok is not None and p.ota_pid is not None
+            or bool(self.fw_file_edit.text().strip())
+        seq_ready = (self.sigrok is not None and p.dfu_pid is not None
                      and fw_ok and p.blank_flash_steps is not None)
         self.start_btn.setEnabled(not busy and seq_ready)
         if not seq_ready:
             missing = []
             if self.sigrok is None: missing.append("sigrok-cli")
-            if p.ota_pid is None: missing.append("ota_pid")
+            if p.dfu_pid is None: missing.append("dfu_pid")
             if not fw_ok: missing.append("app 固件")
             if p.blank_flash_steps is None: missing.append("blank_flash manifest")
             self.start_btn.setToolTip("缺少: " + ", ".join(missing))
@@ -525,19 +565,43 @@ class ProductionTestGUI(QWidget):
             if sid.startswith("capture"):
                 ok = self.sigrok is not None
             elif sid in ("flash_app",):
-                ok = p.ota_pid is not None and fw_ok
-            elif sid in ("wait_ota", "switch_app"):
-                ok = p.ota_pid is not None
+                ok = p.dfu_pid is not None and fw_ok
+            elif sid in ("wait_dfu", "switch_app"):
+                ok = p.dfu_pid is not None
             else:
                 ok = True
             row.run_btn.setEnabled(not busy and ok)
         for btn in getattr(self, "aux_buttons", []):
             btn.setEnabled(not busy)
         if hasattr(self, "reflash_btn"):
-            self.reflash_btn.setEnabled(not busy and p.ota_pid is not None and fw_ok)
+            self.reflash_btn.setEnabled(not busy and p.dfu_pid is not None and fw_ok)
         self.sampling_btn.setEnabled(
             not busy and self.sigrok is not None
             and self._detected_mode(p) == Mode.APP)
+        self._update_switch_btn(p, allow=not busy)
+
+    def _update_switch_btn(self, p: ProductProfile | None, *, allow: bool):
+        """按当前设备模式设置 DFU<->APP 切换按钮的文案、方向提示与启用状态。"""
+        if not hasattr(self, "switch_btn"):
+            return
+        if p is None or p.dfu_pid is None:
+            self.switch_btn.setText("🔀 DFU ↔ APP 切换")
+            self.switch_btn.setToolTip("该产品未配置 DFU（dfu_pid），无法切换")
+            self.switch_btn.setEnabled(False)
+            return
+        mode = self._detected_mode(p)
+        if mode == Mode.DFU:
+            self.switch_btn.setText("🔀 DFU → APP")
+            self.switch_btn.setToolTip("当前为 DFU（烧录）模式，切换到 APP（应用）模式")
+            self.switch_btn.setEnabled(allow)
+        elif mode == Mode.APP:
+            self.switch_btn.setText("🔀 APP → DFU")
+            self.switch_btn.setToolTip("当前为 APP（应用）模式，切换到 DFU（烧录）模式")
+            self.switch_btn.setEnabled(allow)
+        else:
+            self.switch_btn.setText("🔀 DFU ↔ APP 切换")
+            self.switch_btn.setToolTip("未检测到设备，无法切换")
+            self.switch_btn.setEnabled(False)
 
     # -------------------------------------------------------------- actions
 
@@ -567,7 +631,7 @@ class ProductionTestGUI(QWidget):
         self._update_enablement()
 
     def _override_firmware(self) -> Path | None:
-        override = self.ota_file_edit.text().strip()
+        override = self.fw_file_edit.text().strip()
         return Path(override) if override else None
 
     def run_full_test(self):
@@ -596,6 +660,22 @@ class ProductionTestGUI(QWidget):
         self.log_signal.emit(f"===== 辅助操作: {step.label} =====")
         self._start(pipeline_mod.Pipeline.manifest_step(p, self._callbacks(), step),
                     reset_rows=False)
+
+    def run_switch_mode(self):
+        p = self.profile
+        if p is None:
+            return
+        mode = self._detected_mode(p)
+        if mode == Mode.DFU:
+            to_mode, title = "app", "DFU → APP"
+        elif mode == Mode.APP:
+            to_mode, title = "dfu", "APP → DFU"
+        else:
+            QMessageBox.information(self, "无法切换", "未检测到该产品设备。")
+            return
+        self.log_signal.emit(f"===== 辅助操作: 模式切换 {title} =====")
+        self._start(pipeline_mod.Pipeline.switch_mode(
+            p, self._callbacks(), to_mode=to_mode), reset_rows=False)
 
     def run_reflash(self):
         p = self.profile
@@ -636,10 +716,10 @@ class ProductionTestGUI(QWidget):
             self.pipeline.request_cancel()
             self.log_signal.emit("已请求停止…")
 
-    def select_ota_file(self):
+    def select_fw_file(self):
         path, _ = QFileDialog.getOpenFileName(self, "选择固件", "", "BIN Files (*.bin)")
         if path:
-            self.ota_file_edit.setText(path)
+            self.fw_file_edit.setText(path)
             self._update_enablement()
 
     def copy_report(self):

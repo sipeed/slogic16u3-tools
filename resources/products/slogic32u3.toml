@@ -8,7 +8,7 @@ display_name = "SLogic32U3"
 [usb]
 vid = 0x359F
 app_pid = 0x3032
-ota_pid = 0x30F1   # "SLogic DFU"，与 16U3 共用（DFU 模式不区分产品型号，dmesg 实测确认）
+dfu_pid = 0x30F1   # "SLogic DFU"，与 16U3 共用（DFU 模式不区分产品型号，dmesg 实测确认）
 
 [capture]
 driver = "sipeed-slogic-analyzer"
@@ -55,15 +55,15 @@ verify = true
 
 [mode_switch]
 # 32U3 支持 USB 控制传输 RECONFIG（协议规范 0x30 设备管理扩展）自动双向切换
-# OTA<->APP：wValue=1 触发、wIndex=0x5253。工具在切换步骤直接下发，无需人工。
+# DFU<->APP：wValue=1 触发、wIndex=0x5253。工具在切换步骤直接下发，无需人工。
 method = "usb_reconfig"
 
 [blank_flash]
 dir = "blank_flash/slogic32u3"
 
 [timeouts]
-wait_ota_device_s = 30
+wait_dfu_device_s = 30
 wait_app_device_s = 30
-ota_flash_s = 600
+dfu_flash_s = 600
 capture_s = 120
 blank_flash_step_s = 120

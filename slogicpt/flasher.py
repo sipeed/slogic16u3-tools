@@ -1,4 +1,4 @@
-"""OTA/DFU firmware flashing, wrapping the slogicpt.dfu library."""
+"""DFU firmware flashing, wrapping the slogicpt.dfu library."""
 from __future__ import annotations
 
 import contextlib
@@ -39,7 +39,7 @@ def flash_app_firmware(*, vid: int, pid: int, addr: int, firmware: Path,
                        verify: bool = True,
                        log_cb: Callable[[str], None] | None = None,
                        cancel: threading.Event | None = None) -> None:
-    """Flash the application firmware onto a device in OTA mode.
+    """Flash the application firmware onto a device in DFU mode.
 
     Raises FlashError with a readable message on any failure.
     """
@@ -69,7 +69,7 @@ def flash_app_firmware(*, vid: int, pid: int, addr: int, firmware: Path,
     except FlashError:
         raise
     except Exception as e:  # usb.core errors, RuntimeError, assertion...
-        raise FlashError(f"OTA 烧写失败: {e}") from e
+        raise FlashError(f"DFU 烧写失败: {e}") from e
     finally:
         out.flush()
 

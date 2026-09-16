@@ -1,13 +1,13 @@
-"""OTA<->APP 模式切换。
+"""DFU<->APP 模式切换。
 
 三种方式（见产品档案 [mode_switch].method）；本模块只实现 usb_reconfig，
 script/manual 由 pipeline._switch 分别以运行脚本 / 仅提示处理：
 
 - "usb_reconfig"：向当前模式的设备发送 USB 控制传输 RECONFIG（见"USB LA 协议
   规范" 0x30 设备管理扩展），触发 FPGA 重配置，设备离线后以另一模式重枚举。
-  32U3 支持双向（OTA<->APP）。
+  32U3 支持双向（DFU<->APP）。
 - "script"：运行切换脚本（如 16U3 外置 JTAG + gowin_cli），工具追加方向参数
-  ota2app / app2ota；脚本缺失时自动回退为 manual。
+  dfu2app / app2dfu；脚本缺失时自动回退为 manual。
 - "manual"：工具不发起切换，切换步骤仅提示，由后续"等待设备"步骤轮询目标
   模式出现。
 

@@ -75,17 +75,17 @@ class BlankFlashStep:
 
 @dataclass(frozen=True)
 class ModeSwitch:
-    """OTA<->APP 模式切换方式。
+    """DFU<->APP 模式切换方式。
     - "manual":      工具不自动切换；切换步骤仅提示，由工人手动操作，随后等待目标
                      模式设备出现。
     - "script":      工具运行脚本切换（如 16U3 外置 JTAG + gowin_cli），工具会向
-                     argv 追加方向参数 "ota2app" / "app2ota"。脚本未放置时自动回退
+                     argv 追加方向参数 "dfu2app" / "app2dfu"。脚本未放置时自动回退
                      为人工提示（即"外置 JTAG 或工人手动"）。
     - "usb_reconfig": 工具用 USB 控制传输 RECONFIG（见"USB LA 协议规范"0x30）触发
                      FPGA 重配置，双向自动切换（如 32U3）。
     """
     method: str                      # "manual" | "script" | "usb_reconfig"
-    argv: list[str] | None = None    # script 方式命令（工具追加 ota2app/app2ota）
+    argv: list[str] | None = None    # script 方式命令（工具追加 dfu2app/app2dfu）
     timeout_s: float = 60
 
 
@@ -102,9 +102,9 @@ class ExpectedSignal:
 
 @dataclass(frozen=True)
 class Timeouts:
-    wait_ota_device_s: float = 30
+    wait_dfu_device_s: float = 30
     wait_app_device_s: float = 30
-    ota_flash_s: float = 600
+    dfu_flash_s: float = 600
     capture_s: float = 120
     blank_flash_step_s: float = 120
 
@@ -126,7 +126,7 @@ class ProductProfile:
     display_name: str
     vid: int
     app_pid: int
-    ota_pid: int | None                 # None -> OTA not configured
+    dfu_pid: int | None                 # None -> DFU not configured
     driver: str
     num_channels: int                   # device total channels -> unitsize = ceil(n/8)
     max_bandwidth_mbps: int
@@ -141,7 +141,7 @@ class ProductProfile:
     app_firmware: Path | None           # resolved absolute path (may not exist yet)
     app_flash_addr: int
     verify_after_flash: bool
-    mode_switch: ModeSwitch             # OTA<->APP 切换方式
+    mode_switch: ModeSwitch             # DFU<->APP 切换方式
     blank_flash_dir: Path
     blank_flash_steps: list[BlankFlashStep] | None   # None -> manifest missing/bad
     timeouts: Timeouts
@@ -220,10 +220,10 @@ def _parse_profile(path: Path) -> tuple[ProductProfile | None, list[Problem]]:
         if prod_id != path.stem:
             return err(f"product.id ({prod_id}) 与文件名 ({path.stem}) 不一致")
 
-        ota_pid = usb.get("ota_pid")
-        if ota_pid is None:
+        dfu_pid = usb.get("dfu_pid")
+        if dfu_pid is None:
             problems.append(Problem(
-                "warning", prod_id, "usb.ota_pid 未配置，OTA 与一键流程将禁用"))
+                "warning", prod_id, "usb.dfu_pid 未配置，DFU 与一键流程将禁用"))
 
         num_channels = int(capture["num_channels"])
         channel_options = [int(c) for c in capture["channel_options"]]
@@ -288,9 +288,9 @@ def _parse_profile(path: Path) -> tuple[ProductProfile | None, list[Problem]]:
 
         tmo = doc.get("timeouts", {})
         timeouts = Timeouts(
-            wait_ota_device_s=float(tmo.get("wait_ota_device_s", 30)),
+            wait_dfu_device_s=float(tmo.get("wait_dfu_device_s", 30)),
             wait_app_device_s=float(tmo.get("wait_app_device_s", 30)),
-            ota_flash_s=float(tmo.get("ota_flash_s", 600)),
+            dfu_flash_s=float(tmo.get("dfu_flash_s", 600)),
             capture_s=float(tmo.get("capture_s", 120)),
             blank_flash_step_s=float(tmo.get("blank_flash_step_s", 120)),
         )
@@ -300,7 +300,7 @@ def _parse_profile(path: Path) -> tuple[ProductProfile | None, list[Problem]]:
             display_name=str(product["display_name"]),
             vid=int(usb["vid"]),
             app_pid=int(usb["app_pid"]),
-            ota_pid=int(ota_pid) if ota_pid is not None else None,
+            dfu_pid=int(dfu_pid) if dfu_pid is not None else None,
             driver=str(capture["driver"]),
             num_channels=num_channels,
             max_bandwidth_mbps=max_bw,
@@ -346,11 +346,11 @@ def load_profiles(products_dir: Path = PRODUCTS_DIR) -> tuple[list[ProductProfil
         problems.extend(probs)
         if profile is not None:
             profiles.append(profile)
-    # app_pid must be unique (it identifies the product); ota_pid MAY be
+    # app_pid must be unique (it identifies the product); dfu_pid MAY be
     # shared across products -- DFU mode ("SLogic DFU", 0x30F1) is
     # product-agnostic by design
     app_seen: dict[tuple[int, int], str] = {}
-    ota_pids = {(p.vid, p.ota_pid): p.id for p in profiles if p.ota_pid is not None}
+    dfu_pids = {(p.vid, p.dfu_pid): p.id for p in profiles if p.dfu_pid is not None}
     for p in profiles:
         key = (p.vid, p.app_pid)
         if key in app_seen:
@@ -358,10 +358,10 @@ def load_profiles(products_dir: Path = PRODUCTS_DIR) -> tuple[list[ProductProfil
                 "error", p.id,
                 f"app VID/PID {key[0]:#06x}:{key[1]:#06x} 与产品 {app_seen[key]} 冲突"))
         app_seen[key] = p.id
-        if key in ota_pids:
+        if key in dfu_pids:
             problems.append(Problem(
                 "error", p.id,
-                f"app VID/PID {key[0]:#06x}:{key[1]:#06x} 与产品 {ota_pids[key]} 的 ota_pid 冲突"))
+                f"app VID/PID {key[0]:#06x}:{key[1]:#06x} 与产品 {dfu_pids[key]} 的 dfu_pid 冲突"))
     return profiles, problems
 
 
@@ -375,11 +375,11 @@ def check_resources(profiles: list[ProductProfile],
             f"未找到 sigrok-cli 二进制，请按平台命名放入 {RESOURCES_DIR / 'bin'}（见 resources/README.md），采样功能禁用"))
     for p in profiles:
         if p.app_firmware is None:
-            problems.append(Problem("warning", p.id, "firmware.app 未配置，OTA 与一键流程禁用"))
+            problems.append(Problem("warning", p.id, "firmware.app 未配置，DFU 与一键流程禁用"))
         elif not p.app_firmware.is_file():
             problems.append(Problem(
                 "warning", p.id,
-                f"应用固件缺失: {p.app_firmware}，OTA 与一键流程禁用"))
+                f"应用固件缺失: {p.app_firmware}，DFU 与一键流程禁用"))
         if p.blank_flash_steps:
             for step in p.blank_flash_steps:
                 exe = Path(step.argv[-1])
@@ -395,9 +395,9 @@ if __name__ == "__main__":
     profiles, problems = load_profiles()
     print(f"== 加载 {len(profiles)} 个产品档案 ==")
     for p in profiles:
-        ota = f"{p.ota_pid:#06x}" if p.ota_pid is not None else "未配置"
+        dfu = f"{p.dfu_pid:#06x}" if p.dfu_pid is not None else "未配置"
         print(f"\n{p.display_name} ({p.id})")
-        print(f"  USB: {p.vid:#06x} app={p.app_pid:#06x} ota={ota}")
+        print(f"  USB: {p.vid:#06x} app={p.app_pid:#06x} dfu={dfu}")
         print(f"  {p.num_channels}ch, {p.max_bandwidth_mbps}MB/s, unitsize={p.unitsize}")
         print(f"  采样率: {', '.join(format_rate(r) for r in p.samplerates_hz)}")
         for ch in p.channel_options:

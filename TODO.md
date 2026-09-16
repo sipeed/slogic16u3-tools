@@ -7,7 +7,7 @@
 - [ ] `resources/blank_flash/slogic16u3/` 三个脚本：`gowin_flash.sh`、`usb_rst.sh`、`efuse_lock.sh`
       （从产线机 `/home/sipeed007/gowin/scripts/` 迁入；flash 步骤也可改用 openFPGALoader，
       manifest 中有示例）
-- [ ] `resources/blank_flash/slogic32u3/` 同上三个脚本 + OTA 位流（manifest 已建好）
+- [ ] `resources/blank_flash/slogic32u3/` 同上三个脚本 + DFU 位流（manifest 已建好）
 - [ ] Windows 工位如需：上述脚本的 `.bat` 版本（manifest 已写好 `argv_windows`）
 
 ## 固件 / 驱动侧

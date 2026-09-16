@@ -12,16 +12,16 @@ schema_version = 1
 
 [[steps]]
 name = "flash"
-label = "Gowin Flash (OTA FW)"
+label = "Gowin Flash (DFU FW)"
 argv = ["bash", "gowin_flash.sh"]
 argv_windows = ["cmd", "/c", "gowin_flash.bat"]
-# openFPGALoader 替代示例（按实际线缆/板卡参数调整，ota.fs 一并放入本目录）:
-# argv = ["./openFPGALoader-linux-x86_64", "--external-flash", "ota.fs"]
-# argv_windows = ["openFPGALoader-windows.exe", "--external-flash", "ota.fs"]
+# openFPGALoader 替代示例（按实际线缆/板卡参数调整，dfu.fs 一并放入本目录）:
+# argv = ["./openFPGALoader-linux-x86_64", "--external-flash", "dfu.fs"]
+# argv_windows = ["openFPGALoader-windows.exe", "--external-flash", "dfu.fs"]
 timeout_s = 300
 in_pipeline = true
 
-# 注：OTA<->APP 模式切换不再是空板刷机步骤——它属于烧完 app.bin 之后的独立环节，
+# 注：DFU<->APP 模式切换不再是空板刷机步骤——它属于烧完 app.bin 之后的独立环节，
 # 由产品档案 [mode_switch] 声明（16U3=manual：外置 JTAG + gowin_cli 人工切换；
 # 32U3=usb_reconfig：USB 控制传输 RECONFIG 自动切换）。原 "USB Reset" 步骤已移除。
 

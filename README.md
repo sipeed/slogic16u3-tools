@@ -14,8 +14,8 @@ Sipeed SLogic 系列逻辑分析仪产线产测工具，**数据驱动多产品*
 │   ├── waveform.py      #   波形拆包（任意通道数）与 PWM 验证
 │   ├── device_watch.py  #   USB 设备检测（产品 + APP/DFU 模式）
 │   ├── blank_flash.py   #   manifest 驱动的空板刷机
-│   ├── flasher.py       #   OTA 烧写封装
-│   └── dfu/             #   DFU（OTA 模式）USB-SPI Flash 烧写库 + CLI
+│   ├── flasher.py       #   DFU 烧写封装
+│   └── dfu/             #   DFU USB-SPI Flash 烧写库 + CLI
 ├── resources/           # 管理员资源：产品档案 / 固件 / 刷机脚本 / sigrok-cli（见其 README）
 ├── out/                 # 运行时采样输出（自动创建，不入库）
 ├── build.py             # PyInstaller 单二进制打包
@@ -34,8 +34,8 @@ python -m slogicpt                                  # 启动产测 GUI
 
 产测流程（一键从头到尾自动执行，或在序列列表逐步点 ▶）：
 
-1. **烧空板**：执行 manifest 声明的命令（Gowin/openFPGALoader 烧入 OTA 固件），完成后设备以 DFU 模式（0x359F:0x30F1 "SLogic DFU"，各产品共用）枚举
-2. **OTA 烧写**：经 USB-SPI 将应用固件写入档案指定地址并回读校验
+1. **烧空板**：执行 manifest 声明的命令（Gowin/openFPGALoader 烧入 DFU 固件），完成后设备以 DFU 模式（0x359F:0x30F1 "SLogic DFU"，各产品共用）枚举
+2. **DFU 烧写**：经 USB-SPI 将应用固件写入档案指定地址并回读校验
 3. **等待应用设备**：自动等待；超时则横幅提示操作员插拔，检测到后自动继续
 4. **采样验证**：按档案测试点经 sigrok-cli 采样（自动切 logic_channels 分组），与外置固定
    信号源（默认 10MHz 50% TTL）比对每通道频率/占空比 → PASS / FAIL；

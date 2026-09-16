@@ -9,7 +9,7 @@ resources/
 │   ├── slogic16u3.toml
 │   └── slogic32u3.toml
 ├── firmware/<product_id>/
-│   └── app.bin                # 应用固件（OTA 模式下经 SPI Flash 写入）
+│   └── app.bin                # 应用固件（DFU 模式下经 SPI Flash 写入）
 ├── blank_flash/<product_id>/
 │   ├── manifest.toml          # 空板刷机命令清单（步骤名/argv/超时/是否进一键流程）
 │   └── *.sh / *.bat / 工具    # manifest 引用的脚本与资源，相对路径按本目录解析
@@ -32,8 +32,8 @@ cp firmware_v1.2.3.bin resources/firmware/slogic16u3/app.bin
 cp gowin_flash.sh efuse_lock.sh resources/blank_flash/slogic16u3/
 ```
 
-> OTA<->APP 模式切换不在此列：它由产品档案 `[mode_switch]` 声明，`method` 三选一：
-> - `script`：工具运行切换脚本并自动追加方向参数 `ota2app`/`app2ota`（16U3 =
+> DFU<->APP 模式切换不在此列：它由产品档案 `[mode_switch]` 声明，`method` 三选一：
+> - `script`：工具运行切换脚本并自动追加方向参数 `dfu2app`/`app2dfu`（16U3 =
 >   外置 JTAG + gowin_cli，脚本放 `blank_flash/<id>/`，缺失时自动回退人工提示，
 >   即"外置 JTAG 或工人手动"）；
 > - `usb_reconfig`：工具经 USB 控制传输 RECONFIG 自动双向切换，无需脚本（32U3）；
@@ -46,7 +46,7 @@ cp gowin_flash.sh efuse_lock.sh resources/blank_flash/slogic16u3/
 
 - `blank_flash/<id>/efuse_lock.sh|.bat` — eFuse 锁定脚本
 - `blank_flash/<id>/gowin_flash.sh|.bat` — Gowin 烧录脚本
-- `blank_flash/<id>/*.fs`、`*.bin` — OTA 位流等烧录资源
+- `blank_flash/<id>/*.fs`、`*.bin` — DFU 位流等烧录资源
 - `firmware/<id>/app.bin` — 应用固件（是否公开发布由固件团队另行决定）
 
 `manifest.toml` 只声明步骤与命令行接口（不含实现），可以公开。
@@ -57,7 +57,7 @@ GUI 顶栏"⚠ 警告"角标里的每一条都对应一个待放置/待确认项
 
 | 警告 | 解决办法 |
 |---|---|
-| `usb.ota_pid 未配置` | 硬件确认该产品 OTA 模式 PID 后填入 `products/<id>.toml` 的 `[usb] ota_pid` |
+| `usb.dfu_pid 未配置` | 硬件确认该产品 DFU 模式 PID 后填入 `products/<id>.toml` 的 `[usb] dfu_pid` |
 | `应用固件缺失: .../app.bin` | 把应用固件放到 `firmware/<id>/app.bin` |
 | `blank_flash manifest 缺失` | 在 `blank_flash/<id>/` 创建 `manifest.toml`（可复制 slogic16u3 的模板） |
 | `步骤 'xxx' 引用的文件缺失` | 把 manifest argv 引用的脚本/工具放入同目录（如从产线机 `/home/sipeed007/gowin/scripts/` 迁入） |
@@ -69,7 +69,7 @@ GUI 顶栏"⚠ 警告"角标里的每一条都对应一个待放置/待确认项
   `argv_darwin` 时对应平台优先使用，因此同一份资源包可同时服务两种产线工位：
   Linux 放 `.sh`，Windows 放 `.bat`/`.exe`，互不干扰；
 - 烧录（flash）一步可用 **openFPGALoader**（开源、跨平台、支持 Gowin）替代
-  Gowin programmer——把对应平台的可执行文件与 OTA 位流一起放进
+  Gowin programmer——把对应平台的可执行文件与 DFU 位流一起放进
   `blank_flash/<id>/`，随资源包整体分发；**eFuse Lock 无开源替代**，仍需
   Gowin 官方工具（Linux/Windows 均有 CLI），由工位环境提供；
 - Windows 工位需 libusb 环境（WinUSB 驱动/Zadig 与 `libusb-1.0.dll`），与
@@ -88,7 +88,7 @@ SLogicPT/
 
 ## 产品档案要点
 
-- `usb.ota_pid` 未知时可先不写，GUI 会提示 "OTA 未配置" 并禁用 OTA 与一键流程，其余功能不受影响；
+- `usb.dfu_pid` 未知时可先不写，GUI 会提示 "DFU 未配置" 并禁用 DFU 与一键流程，其余功能不受影响；
 - `capture.samplerates` 必须填 sigrok 驱动实际支持的档位（`sigrok-cli -d <driver> --show` 查询），
   GUI 会再按 `channels × rate / 8 ≤ max_bandwidth_mbps` 过滤展示；
 - `firmware.app_flash_addr` 因产品而异，填错会导致固件无法启动；
