@@ -177,27 +177,57 @@ class ProductProfile:
         return [r for r in self.samplerates_hz if channels * r // 8 <= limit]
 
 
-def _default_appimage() -> Path | None:
-    """resources/bin 下的 Gowin Programmer AppImage（cli 缺省时用）。"""
-    hits = sorted((RESOURCES_DIR / "bin").glob("Gowin-Programmer*.AppImage"))
-    return hits[0] if hits else None
+def _default_cli() -> list[str]:
+    """平台感知的烧录器 CLI 缺省值（cli 未在任何 TOML 声明时用）。
+    版本无关的约定路径优先，便于升级替换；Linux 兼容已有带版本的 AppImage。"""
+    bin_dir = RESOURCES_DIR / "bin"
+    if PLATFORM_KEY == "windows":
+        # 把整个 Gowin Programmer 文件夹拷进 resources/bin/Programmer/（≈ Linux 软链）
+        exe = bin_dir / "Programmer" / "bin" / "programmer_cli.exe"
+        return [str(exe)] if exe.is_file() else []
+    # linux / darwin：版本无关名优先，否则 glob 兼容现有 Gowin-Programmer-<ver>-*.AppImage
+    exe = bin_dir / "Gowin-Programmer-x86_64.AppImage"
+    if not exe.is_file():
+        hits = sorted(bin_dir.glob("Gowin-Programmer*.AppImage"))
+        exe = hits[0] if hits else None
+    return [str(exe), "--programmer-cli"] if exe else []
 
 
-def _resolve_cli(raw_cli: list, product_dir: Path) -> list[str]:
-    """把 cli 的第一元素（可执行文件）按产品目录解析为绝对路径（相对路径且实际
-    存在时）；否则保留字面量（交给 PATH 查找，如 'openFPGALoader'）。"""
+def _cli_from(raw_cli, base: Path) -> list[str]:
+    """解析一份声明的 cli：首元素含 "/" 或绝对路径 -> 按 base 解析为绝对路径，
+    **路径不存在则返回 []**（让调用方回退到更低优先级的来源）；无 "/" 的裸命令名
+    （如 'openFPGALoader'）信任 PATH 原样保留。空/未声明 -> []。"""
+    if not raw_cli:
+        return []
     out = [str(x) for x in raw_cli]
-    if out:
-        first = Path(out[0])
-        if not first.is_absolute():
-            cand = (product_dir / first).resolve()
-            if cand.exists():
-                out[0] = str(cand)
+    first = Path(out[0])
+    if "/" in out[0] or first.is_absolute():
+        cand = first if first.is_absolute() else (base / first)
+        cand = cand.resolve()
+        if not cand.is_file():
+            return []          # 声明的路径不存在 -> 回退
+        out[0] = str(cand)
     return out
 
 
-def load_programmer(product_dir: Path) -> tuple[Programmer | None, list[str]]:
-    """Load programmer.toml.  Returns (programmer, error strings)."""
+def load_shared_programmer() -> dict:
+    """读共享 resources/programmer.toml 的 [programmer]（cli/cli_<plat>/timeout_s）。
+    16U3/32U3 共用同一烧录器，cli 集中于此，产品档案不再各写一遍。文件缺失/无效
+    则返回 {}（回退到 _default_cli()）。"""
+    f = RESOURCES_DIR / "programmer.toml"
+    if not f.is_file():
+        return {}
+    try:
+        return tomllib.loads(f.read_text(encoding="utf-8")).get("programmer", {}) or {}
+    except (tomllib.TOMLDecodeError, OSError):
+        return {}
+
+
+def load_programmer(product_dir: Path,
+                    shared: dict | None = None) -> tuple[Programmer | None, list[str]]:
+    """Load programmer.toml.  Returns (programmer, error strings).
+    `shared` 是 load_shared_programmer() 的结果（cli/timeout 的共享缺省）。"""
+    shared = shared or {}
     f = product_dir / "programmer.toml"
     if not f.is_file():
         return None, [f"programmer.toml 缺失: {f}"]
@@ -209,12 +239,11 @@ def load_programmer(product_dir: Path) -> tuple[Programmer | None, list[str]]:
     if praw is None:
         return None, [f"programmer.toml 缺 [programmer] 段: {f}"]
     try:
-        cli_raw = praw.get(f"cli_{PLATFORM_KEY}", praw.get("cli"))
-        if cli_raw:
-            cli = _resolve_cli(cli_raw, product_dir)
-        else:
-            app = _default_appimage()   # 缺省：resources/bin 的 AppImage + --programmer-cli
-            cli = [str(app), "--programmer-cli"] if app else []
+        # cli 优先级：产品档案 -> 共享 resources/programmer.toml -> 平台默认
+        cli = (_cli_from(praw.get(f"cli_{PLATFORM_KEY}", praw.get("cli")), product_dir)
+               or _cli_from(shared.get(f"cli_{PLATFORM_KEY}", shared.get("cli")),
+                            RESOURCES_DIR)
+               or _default_cli())
         cables = [int(c) for c in praw.get("cable_candidates", [])]
         if not cables:
             raise ValueError("cable_candidates 为空")
@@ -251,7 +280,7 @@ def load_programmer(product_dir: Path) -> tuple[Programmer | None, list[str]]:
             cli=cli,
             device=str(praw["device"]),
             cable_candidates=cables,
-            timeout_s=float(praw.get("timeout_s", 30)),
+            timeout_s=float(praw.get("timeout_s", shared.get("timeout_s", 30))),
             flash=flash,
             efuse_key_file=key_file,
             switch=switch,
@@ -261,7 +290,8 @@ def load_programmer(product_dir: Path) -> tuple[Programmer | None, list[str]]:
         return None, [f"programmer.toml [programmer] 无效: {e}"]
 
 
-def _parse_profile(product_dir: Path) -> tuple[ProductProfile | None, list[Problem]]:
+def _parse_profile(product_dir: Path,
+                   shared: dict | None = None) -> tuple[ProductProfile | None, list[Problem]]:
     problems: list[Problem] = []
     pid_for_log = product_dir.name
     toml_file = product_dir / "product.toml"
@@ -337,7 +367,7 @@ def _parse_profile(product_dir: Path) -> tuple[ProductProfile | None, list[Probl
         ms_raw = doc.get("mode_switch", {})
         switch_usb_reconfig = bool(ms_raw.get("usb_reconfig", False))
 
-        programmer, prog_errors = load_programmer(product_dir)
+        programmer, prog_errors = load_programmer(product_dir, shared)
         for m in prog_errors:
             problems.append(Problem("warning", prod_id, m))
 
@@ -398,8 +428,9 @@ def load_profiles(products_dir: Path = PRODUCTS_DIR) -> tuple[list[ProductProfil
     if not dirs:
         return [], [Problem("error", None,
                             f"产品档案目录为空: {products_dir}，请放置 <product_id>/product.toml")]
+    shared = load_shared_programmer()   # 共享 cli/timeout，各产品继承
     for d in dirs:
-        profile, probs = _parse_profile(d)
+        profile, probs = _parse_profile(d, shared)
         problems.extend(probs)
         if profile is not None:
             profiles.append(profile)

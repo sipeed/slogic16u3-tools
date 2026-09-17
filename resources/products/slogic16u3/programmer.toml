@@ -12,15 +12,10 @@
 schema_version = 1
 
 [programmer]
-# cli：所有操作的 argv 前缀，第一元素是可执行文件（相对路径按本目录解析）。
-# 缺省则自动用 resources/bin/ 下的 Gowin-Programmer*.AppImage + --programmer-cli。
-# Linux（二次打包 AppImage）：
-# cli = ["../../bin/Gowin-Programmer-1.9.12.03-2712-x86_64.AppImage", "--programmer-cli"]
-# Windows 产线（官方 CLI 或另行打包的 exe）：
-# cli_windows = ["C:/Gowin/Programmer/bin/programmer_cli.exe"]
+# cli（所有操作的 argv 前缀）不在此声明——16U3/32U3 共用，集中在 resources/programmer.toml。
+# 仅当本产品需用不同烧录器时才在此加 cli/cli_windows 覆盖（首元素相对路径按本目录解析）。
 device = "GW5AT-15A"               # SLogic16U3 = Gowin GW5AT-15A（IDCODE 0x0001681B）
 cable_candidates = [4, 1, 5]       # 逐个试 --cable-index：4=USB Debugger A，1=FT2CH，5=WINUSB
-timeout_s = 30
 
 [programmer.flash]                 # 烧空板：把 DFU 位流写入外部 SPI Flash，上电从此启动
 image = "firmware/dfu.fs"          # 16U3 工具链导出 .fs 位流（工厂放置，gitignore）

@@ -1,0 +1,23 @@
+# 共享烧录器命令声明（公开，入库）
+#
+# SLogic 各型号（16U3 / 32U3 / 后续）用的是同一个 Gowin Programmer，故 cli 集中在此，
+# 各 products/<id>/programmer.toml 不再各写一遍（它们只声明 device / cable / flash /
+# efuse / switch 这些每产品不同的部分）。
+#
+# cli 解析优先级：产品档案的 cli/cli_<平台>  →  本文件  →  代码内平台默认。
+# 首元素含 "/" 时按 resources/ 目录解析为绝对路径；解析出的路径不存在则自动回退到
+# 下一优先级（因此下面写版本无关名、而工位实际放了带版本号的 AppImage 时，代码会
+# glob 兜底找到它，仍可用）。
+
+schema_version = 1
+
+[programmer]
+# Linux：把 Gowin Programmer 的 AppImage 放到 resources/bin/ 并重命名/软链为版本无关名，
+# 升级时只换文件、无需改配置（代码也兼容 Gowin-Programmer-<版本>-x86_64.AppImage 原名）。
+cli = ["bin/Gowin-Programmer-x86_64.AppImage", "--programmer-cli"]
+
+# Windows：把整个 Gowin Programmer 文件夹拷进 resources/bin/Programmer/
+#（相当于 Linux 的软链——只是 Windows 用拷贝），指向其中的 programmer_cli.exe。
+cli_windows = ["bin/Programmer/bin/programmer_cli.exe"]
+
+timeout_s = 30

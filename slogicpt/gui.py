@@ -314,15 +314,21 @@ class ProductionTestGUI(QWidget):
         self.expected_table.verticalHeader().setDefaultSectionSize(24)
         self.expected_table.verticalHeader().setFixedWidth(34)
         pv.addWidget(self.expected_table, 1)
-        fw_row = QHBoxLayout()
-        fw_row.addWidget(QLabel("固件覆盖:"))
-        self.fw_file_edit = QLineEdit()
-        self.fw_file_edit.setPlaceholderText("默认使用产品档案固件")
-        fw_btn = QPushButton("…"); fw_btn.setFixedWidth(30)
-        fw_btn.clicked.connect(self.select_fw_file)
-        fw_row.addWidget(self.fw_file_edit, 1)
-        fw_row.addWidget(fw_btn)
-        pv.addLayout(fw_row)
+        # 资源路径覆盖：显示产品档案解析出的路径（placeholder），可临时改用别的文件
+        # （仅本次会话生效，不写回 TOML）。三项：app 固件 / DFU 镜像 / eFuse 密钥。
+        res_box = QGroupBox("资源路径覆盖（留空＝用产品档案；仅本次会话生效）")
+        res_grid = QGridLayout()
+        res_grid.setContentsMargins(6, 4, 6, 4)
+        res_grid.setVerticalSpacing(3)
+        self.fw_file_edit = self._add_resource_row(
+            res_grid, 0, "app 固件:", self.select_fw_file)
+        self.dfu_file_edit = self._add_resource_row(
+            res_grid, 1, "DFU 镜像:", self.select_dfu_file)
+        self.ekey_file_edit = self._add_resource_row(
+            res_grid, 2, "eFuse 密钥:", self.select_ekey_file)
+        res_grid.setColumnStretch(1, 1)
+        res_box.setLayout(res_grid)
+        pv.addWidget(res_box)
         param_page.setLayout(pv)
         self.tabs.addTab(param_page, "测试参数")
 
@@ -417,9 +423,16 @@ class ProductionTestGUI(QWidget):
         self.channel_combo.blockSignals(False)
         self.samples_edit.setText(p.default_samples)
         self.volt_edit.setText(f"{p.voltage_threshold_v:g}")
-        self.fw_file_edit.setText("")
-        self.fw_file_edit.setPlaceholderText(
-            str(p.app_firmware) if p.app_firmware else "档案未配置固件，请手动选择")
+        # 资源路径覆盖：清空覆盖、placeholder 显示档案解析出的当前路径
+        prog = p.programmer
+        dfu_img = prog.flash.image if (prog and prog.flash) else None
+        ekey = prog.efuse_key_file if prog else None
+        for edit, path, empty_hint in (
+                (self.fw_file_edit, p.app_firmware, "档案未配置固件，请手动选择"),
+                (self.dfu_file_edit, dfu_img, "档案未配置 DFU 镜像"),
+                (self.ekey_file_edit, ekey, "档案未配置 eFuse 密钥")):
+            edit.setText("")
+            edit.setPlaceholderText(str(path) if path else empty_hint)
         self._on_channels_changed(self.channel_combo.currentText())
         # profile-declared default rate for the default channel count
         default_rate = format_rate(p.default_samplerate_hz)
@@ -492,6 +505,16 @@ class ProductionTestGUI(QWidget):
         """Status is about the SELECTED product; other attached SLogic
         devices are only a secondary hint (they also block sigrok capture
         until the driver supports device selection)."""
+        if not device_watch.backend_ok():
+            # 无 libusb 后端时所有 usb.core.find 静默失败 -> 看不到任何设备；
+            # 显式告警而非静默（典型：Windows 未装 libusb-1.0.dll）
+            self.device_status_label.setText(
+                "⚠ 未找到 libusb 后端（libusb-1.0.dll）：无法枚举 USB 设备，"
+                "DFU/APP 检测失效——见 resources/README.md")
+            self.device_status_label.setStyleSheet("color:#c62828;")
+            self.detected = []
+            self._update_enablement()
+            return
         self.detected = device_watch.scan_devices(self.profiles)
         p = self.profile
         conflict = self._conflicting_app_device(p)
@@ -685,6 +708,14 @@ class ProductionTestGUI(QWidget):
         override = self.fw_file_edit.text().strip()
         return Path(override) if override else None
 
+    def _override_dfu(self) -> Path | None:
+        override = self.dfu_file_edit.text().strip()
+        return Path(override) if override else None
+
+    def _override_efuse(self) -> Path | None:
+        override = self.ekey_file_edit.text().strip()
+        return Path(override) if override else None
+
     def run_full_test(self):
         p = self.profile
         if p is None or self.sigrok is None:
@@ -692,7 +723,8 @@ class ProductionTestGUI(QWidget):
         self.log_signal.emit(f"===== 一键全流程: {p.display_name} =====")
         self._start(pipeline_mod.Pipeline.full_test(
             p, self.sigrok, self._callbacks(), self._override_firmware(),
-            cable_index=self.probe_cable),
+            cable_index=self.probe_cable, image_override=self._override_dfu(),
+            efuse_key_override=self._override_efuse()),
             reset_rows=True)
 
     def run_single_step(self, step_id: str):
@@ -703,7 +735,8 @@ class ProductionTestGUI(QWidget):
         self.log_signal.emit(f"===== 单步执行: {row.label_text if row else step_id} =====")
         self._start(pipeline_mod.Pipeline.single_step(
             p, self.sigrok, self._callbacks(), step_id, self._override_firmware(),
-            cable_index=self.probe_cable),
+            cable_index=self.probe_cable, image_override=self._override_dfu(),
+            efuse_key_override=self._override_efuse()),
             reset_rows=False)
 
     def run_probe(self):
@@ -787,10 +820,37 @@ class ProductionTestGUI(QWidget):
             self.pipeline.request_cancel()
             self.log_signal.emit("已请求停止…")
 
+    def _add_resource_row(self, grid, row: int, label: str, on_browse):
+        """一行"资源路径覆盖"：标签 + QLineEdit（placeholder 后填档案路径）+ … 浏览。
+        返回该行的 QLineEdit。"""
+        grid.addWidget(QLabel(label), row, 0)
+        edit = QLineEdit()
+        edit.setPlaceholderText("默认使用产品档案")
+        btn = QPushButton("…"); btn.setFixedWidth(30)
+        btn.clicked.connect(on_browse)
+        grid.addWidget(edit, row, 1)
+        grid.addWidget(btn, row, 2)
+        return edit
+
     def select_fw_file(self):
-        path, _ = QFileDialog.getOpenFileName(self, "选择固件", "", "BIN Files (*.bin)")
+        path, _ = QFileDialog.getOpenFileName(
+            self, "选择 app 固件", "", "固件/位流 (*.bin *.fs);;所有文件 (*)")
         if path:
             self.fw_file_edit.setText(path)
+            self._update_enablement()
+
+    def select_dfu_file(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "选择 DFU 镜像", "", "位流 (*.bin *.fs);;所有文件 (*)")
+        if path:
+            self.dfu_file_edit.setText(path)
+            self._update_enablement()
+
+    def select_ekey_file(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "选择 eFuse 密钥", "", "eFuse 密钥 (*.ekey);;所有文件 (*)")
+        if path:
+            self.ekey_file_edit.setText(path)
             self._update_enablement()
 
     def copy_report(self):

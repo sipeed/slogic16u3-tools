@@ -6,19 +6,28 @@
 
 ```
 resources/
+├── programmer.toml               # 共享烧录器命令（cli / cli_windows / timeout），公开入库
 ├── products/<product_id>/        # 一产品一目录，目录名 = product_id
 │   ├── product.toml              # 产品档案（USB PID / 通道 / 带宽 / 期望信号 / 模式切换），公开入库
-│   ├── programmer.toml           # 外置烧录器命令（cli / device / flash / efuse），公开入库
+│   ├── programmer.toml           # 本产品的 device / cable / flash / efuse / switch，公开入库
 │   └── firmware/                 # 固件与烧录资源（工厂本地，禁止入库/公开）
 │       ├── app.bin               #   应用固件（DFU 模式下经 SPI Flash 写入）
-│       ├── dfu.fs / dfu.bin      #   空板刷机镜像（16U3=.fs / 32U3=.bin）
+│       ├── dfu.fs / dfu.bin      #   空板刷机位流（16U3=.fs / 32U3=.bin，均经 --fsFile）
 │       └── efuse.ekey            #   eFuse AES 密钥（机密，绝不入库）
 └── bin/                          # 跨平台工具二进制
     ├── sigrok-cli-linux-x86_64            # sigrok-cli：Linux AppImage 重命名/软链
     ├── sigrok-cli-windows-x86_64.exe      #   Windows
     ├── sigrok-cli-macos-arm64             #   macOS
-    └── Gowin-Programmer-*.AppImage        # Gowin 烧录器（programmer.cli 默认自动 glob）
+    ├── Gowin-Programmer-x86_64.AppImage   # Gowin 烧录器（Linux，版本无关名；也兼容带版本原名）
+    ├── Programmer/                        # Gowin 烧录器（Windows：整个 Programmer 文件夹拷进来）
+    └── libusb-1.0.dll                     # Windows：pyusb 后端（见下文跨平台）
 ```
+
+> **cli 是共享的**：16U3/32U3 用同一 Gowin Programmer，`cli`/`cli_windows` 集中在
+> `resources/programmer.toml`（不再散在各产品档案里）。各 `products/<id>/programmer.toml`
+> 只声明本产品不同的 device/cable/flash/efuse/switch。解析优先级：产品档案 → 共享
+> `resources/programmer.toml` → 代码内平台默认（Linux glob `Gowin-Programmer*.AppImage`；
+> Windows `bin/Programmer/bin/programmer_cli.exe`）。
 
 ## 放置示例（Linux 工位）
 
@@ -113,20 +122,41 @@ GUI 顶栏"⚠ 警告"角标里的每一条都对应一个待放置/待确认项
 |---|---|
 | `usb.dfu_pid 未配置` | 硬件确认该产品 DFU 模式 PID 后填入 `product.toml` 的 `[usb] dfu_pid` |
 | `应用固件缺失: .../app.bin` | 把应用固件放到 `products/<id>/firmware/app.bin` |
-| `未找到烧录器 CLI` | 把 Gowin Programmer AppImage 放进 `bin/`，或在 `programmer.toml` 声明 `cli` |
-| `DFU 镜像缺失` | 把空板镜像放到 `products/<id>/firmware/`（16U3=dfu.fs / 32U3=dfu.bin） |
+| `未找到烧录器 CLI` | Linux 把 Gowin Programmer AppImage 放进 `bin/`；Windows 把 Programmer 文件夹拷进 `bin/Programmer/`；或在共享 `resources/programmer.toml` 改 `cli`/`cli_windows` |
+| `DFU 镜像缺失` | 把空板位流放到 `products/<id>/firmware/`（16U3=dfu.fs / 32U3=dfu.bin） |
 | `eFuse 密钥文件缺失` | 把 `efuse.ekey` 放到 `products/<id>/firmware/`（缺失时烧空板的 eFuse 前置步骤会失败） |
 | `未找到 sigrok-cli 二进制` | 按平台命名放入 `bin/`（见上文） |
+| `未找到 libusb 后端（libusb-1.0.dll）` | Windows：把 `libusb-1.0.dll` 放进 `bin/`（见跨平台一节），并给设备装 WinUSB 驱动 |
+
+> **GUI 资源路径可临时覆盖**：`测试参数`页的"资源路径覆盖"三行分别显示当前档案解析出的
+> app 固件 / DFU 镜像 / eFuse 密钥路径（灰字 placeholder），可点 `…` 浏览换用别的文件，
+> **仅本次会话生效、不写回 TOML**——方便临时验证不同固件/位流/密钥。
 
 ## 跨平台（Linux / Windows）
 
-- `programmer.toml` 的 `cli` 支持 `cli_linux` / `cli_windows` / `cli_darwin` 覆盖，
-  同一份资源包可同时服务两种产线工位（其余声明与资源全平台通用）；
-- **Windows 工位必须显式配 `cli_windows`**：Linux 缺省会自动用 `bin/` 下的 Gowin
-  AppImage，但 Windows 无 AppImage，不配 `cli_windows` 则烧空板/eFuse/切换保底全禁用。
-  指向本机 Gowin `programmer_cli.exe` 即可，例如
-  `cli_windows = ["C:/Gowin/Programmer/bin/programmer_cli.exe"]`；
-- Windows 工位需 libusb 环境（WinUSB 驱动/Zadig 与 `libusb-1.0.dll`），与旧产测环境一致。
+- 烧录器 cli 集中在共享 `resources/programmer.toml`，支持 `cli` / `cli_windows` /
+  `cli_darwin`（各产品档案也可各自覆盖）。默认路径版本无关，便于升级替换；
+- **Windows 烧录器**：把整个 Gowin `Programmer` 文件夹拷进 `bin/Programmer/`（相当于
+  Linux 的软链，只是 Windows 用拷贝），默认即用 `bin/Programmer/bin/programmer_cli.exe`，
+  通常无需改配置；放在别处则在共享 `programmer.toml` 改 `cli_windows`。
+- **libusb 后端**：本工具用 pyusb 枚举 USB 设备（DFU/APP 检测、RECONFIG 切换）。
+  - 推荐**把 `libusb-1.0.dll` 内置到 `resources/bin/`**——LGPL 允许随项目分发，工位免装依赖；
+    工具会**优先加载这个内置 DLL**（见 `slogicpt/device_watch.libusb_backend`），`build.py`
+    也会自动把它打包进 exe。`.gitignore` 已放行该文件，可 `git add` 入库随项目走。
+  - 或装到系统 / 放 exe 同级。**无论哪种，都需给设备装 WinUSB 驱动**（本设备带 MS OS 2.0
+    描述符，Win10+ 通常自动装 WinUSB；否则用 Zadig 手动指定 WinUSB）。
+  - 缺后端时 GUI 顶栏会**显式红字告警**"未找到 libusb 后端"，不再静默显示"无设备"。
+
+- **Linux 权限**：libusb 通常能枚举设备，但读序列号 / 发 DFU↔APP 的 RECONFIG 控制传输
+  需要访问权限。缺 udev 规则、且用户不在 `uucp`（Arch）或 `dialout`（Debian/Ubuntu）组时会
+  报 `LIBUSB_ERROR_ACCESS`。给 VID 0x359F 加一条 udev 规则：
+  ```
+  # /etc/udev/rules.d/60-sipeed-slogic.rules
+  SUBSYSTEM=="usb", ATTR{idVendor}=="359f", MODE="0660", GROUP="uucp", TAG+="uaccess"
+  # Debian/Ubuntu 改 GROUP="dialout"
+  sudo udevadm control --reload-rules && sudo udevadm trigger   # 之后重新插拔设备
+  ```
+  （症状：设备能被检测到，但切换模式或读序列号报权限错误。）
 
 ### Windows 工位放置清单
 
@@ -134,8 +164,8 @@ GUI 顶栏"⚠ 警告"角标里的每一条都对应一个待放置/待确认项
 |---|---|
 | Python（**仅源码运行时**需要，跑打包好的 exe 不需要） | **3.11 或更高**（依赖标准库 tomllib；低版本启动即报错退出） |
 | sigrok-cli | `bin/sigrok-cli-windows-x86_64.exe` |
-| Gowin 烧录器 | 本机 `programmer_cli.exe` + 在各 `programmer.toml` 写 `cli_windows` 指向它 |
-| libusb 后端 | `libusb-1.0.dll`：放 `bin/` 下（`build.py` 会自动打包进 exe），或装到系统 / exe 同级；配合 WinUSB 驱动（Zadig） |
+| Gowin 烧录器 | 把 Gowin `Programmer` 文件夹拷进 `bin/Programmer/`（默认即用其 `bin/programmer_cli.exe`） |
+| libusb 后端 | `bin/libusb-1.0.dll`（推荐内置入库；`build.py` 自动打包进 exe）+ 设备 WinUSB 驱动（Zadig） |
 | 固件资源 | `products/<id>/firmware/` 下的 app.bin / dfu.* / efuse.ekey |
 
 ## 打包分发

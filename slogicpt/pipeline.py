@@ -120,21 +120,27 @@ class Pipeline:
     @classmethod
     def full_test(cls, profile: ProductProfile, sigrok: SigrokCli,
                   callbacks: PipelineCallbacks,
-                  firmware_path=None, cable_index: int | None = None) -> "Pipeline":
+                  firmware_path=None, cable_index: int | None = None,
+                  image_override=None, efuse_key_override=None) -> "Pipeline":
         p = cls(profile, sigrok, callbacks, [])
         p._firmware_override = firmware_path
         p._cable_index = cable_index
+        p._image_override = image_override
+        p._efuse_key_override = efuse_key_override
         p.steps = p._sequence_defs()
         return p
 
     @classmethod
     def single_step(cls, profile: ProductProfile, sigrok: SigrokCli | None,
                     callbacks: PipelineCallbacks, step_id: str,
-                    firmware_path=None, cable_index: int | None = None) -> "Pipeline":
+                    firmware_path=None, cable_index: int | None = None,
+                    image_override=None, efuse_key_override=None) -> "Pipeline":
         """Manual mode: run exactly one sequence step by id."""
         p = cls(profile, sigrok, callbacks, [])
         p._firmware_override = firmware_path
         p._cable_index = cable_index
+        p._image_override = image_override
+        p._efuse_key_override = efuse_key_override
         matches = [d for d in p._sequence_defs() if d.id == step_id]
         if not matches:
             raise ValueError(f"未知步骤: {step_id}")
@@ -235,7 +241,9 @@ class Pipeline:
     def _log(self, msg: str) -> None:
         self.cb.on_log(msg)
 
-    _cable_index = None    # external-programmer cable index (from the GUI probe)
+    _cable_index = None         # external-programmer cable index (from the GUI probe)
+    _image_override = None      # GUI 会话级：覆盖 DFU 镜像路径
+    _efuse_key_override = None  # GUI 会话级：覆盖 eFuse 密钥路径
 
     def _efuse_ensure(self) -> bool:
         """烧空板前置：加密 DFU 位流须以 eFuse 中的 AES 密钥启动（write），
@@ -243,7 +251,7 @@ class Pipeline:
         （不可逆），随后回读锁定位校验。"""
         prog = self.profile.programmer
         state, cable = programmer_mod.efuse_state(
-            prog, self._cable_index, self._log, self.cancel)
+            prog, self._cable_index, log_cb=self._log, cancel=self.cancel)
         if cable is not None:
             self._cable_index = cable   # 后续烧写步骤复用同一 cable
         if state == "locked":
@@ -255,13 +263,14 @@ class Pipeline:
             self.report_lines.append("eFuse 写锁: FAIL（状态未知）")
             return False
         self._log("eFuse 未锁：写入 AES 密钥并锁定（加密 DFU 启动前提，不可逆）…")
-        if not programmer_mod.efuse_lock(prog, self._cable_index,
-                                         self._log, self.cancel):
+        if not programmer_mod.efuse_lock(
+                prog, self._cable_index, key_file=self._efuse_key_override,
+                log_cb=self._log, cancel=self.cancel):
             self.report_lines.append("eFuse 写锁: FAIL（写入失败）")
             return False
         # 回读校验：写锁后 --keyread 应报 Device Locked
         state2, _ = programmer_mod.efuse_state(
-            prog, self._cable_index, self._log, self.cancel)
+            prog, self._cable_index, log_cb=self._log, cancel=self.cancel)
         ok = state2 == "locked"
         self.report_lines.append(
             "eFuse 写锁: " + ("OK（回读确认已锁定）" if ok else "FAIL（回读未确认锁定）"))
@@ -270,12 +279,14 @@ class Pipeline:
         return ok
 
     def _flash_blank(self) -> bool:
-        ok = programmer_mod.flash(
-            self.profile.programmer, self._cable_index, self._log, self.cancel)
         op = self.profile.programmer.flash
+        img = self._image_override if self._image_override is not None else op.image
+        ok = programmer_mod.flash(
+            self.profile.programmer, self._cable_index, image=self._image_override,
+            log_cb=self._log, cancel=self.cancel)
         self.report_lines.append(
             f"烧空板 DFU 镜像: {'OK' if ok else 'FAIL'} "
-            f"({op.image.name} @ {op.spiaddr:#x})")
+            f"({img.name} @ {op.spiaddr:#x})")
         return ok
 
     def _wait_mode(self, pid: int, timeout_s: float, what: str) -> bool:

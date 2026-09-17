@@ -19,6 +19,7 @@ from __future__ import annotations
 import subprocess
 import threading
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable, Literal
 
 from .profiles import Programmer
@@ -153,9 +154,11 @@ def _resolve_cable(prog: Programmer, cable_index: int | None,
 
 
 def flash(prog: Programmer, cable_index: int | None = None,
+          image: Path | None = None,
           log_cb: Callable[[str], None] = print,
           cancel: threading.Event | None = None) -> bool:
-    """Blank-flash: program the DFU image into external SPI flash."""
+    """Blank-flash: program the DFU image into external SPI flash.
+    `image` 覆盖 op.image（GUI 会话级资源路径覆盖）。"""
     if not prog.cli:
         log_cb("[flash] 未找到烧录器 CLI，无法烧录")
         return False
@@ -163,18 +166,19 @@ def flash(prog: Programmer, cable_index: int | None = None,
     if op is None:
         log_cb("[flash] programmer.toml 未声明 [programmer.flash]，无法烧录")
         return False
-    if not op.image.is_file():
-        log_cb(f"[flash] DFU 镜像缺失: {op.image}")
+    img = image if image is not None else op.image
+    if not img.is_file():
+        log_cb(f"[flash] DFU 镜像缺失: {img}")
         return False
     cable = _resolve_cable(prog, cable_index, log_cb, cancel)
     if cable is None:
         log_cb("[flash] 未找到可用 cable，外置烧录器未连接？")
         return False
     log_cb(f"[flash] 烧空板：device={prog.device} cable-index={cable} "
-           f"run={op.run} --fsFile={op.image.name} spiaddr={op.spiaddr:#08x}")
+           f"run={op.run} --fsFile={img.name} spiaddr={op.spiaddr:#08x}")
     # --fsFile 接受 .fs / .bin 位流；需绝对路径（op.image 已 resolve）
     rc, out = _run(prog, [*_cable_args(prog.device, cable),
-                          "--run", str(op.run), "--fsFile", str(op.image),
+                          "--run", str(op.run), "--fsFile", str(img),
                           "--spiaddr", f"{op.spiaddr:#08x}"], log_cb, cancel)
     ok = _write_ok(rc, out)
     log_cb(f"[flash] {'烧录完成' if ok else '烧录失败'}")
@@ -223,13 +227,15 @@ def switch(prog: Programmer, direction: str, cable_index: int | None = None,
 
 
 def efuse_lock(prog: Programmer, cable_index: int | None = None,
+               key_file: Path | None = None,
                log_cb: Callable[[str], None] = print,
                cancel: threading.Event | None = None) -> bool:
-    """Write the AES key eFuse and lock it (IRREVERSIBLE)."""
+    """Write the AES key eFuse and lock it (IRREVERSIBLE).
+    `key_file` 覆盖 prog.efuse_key_file（GUI 会话级资源路径覆盖）。"""
     if not prog.cli:
         log_cb("[efuse] 未找到烧录器 CLI，无法写锁")
         return False
-    key = prog.efuse_key_file
+    key = key_file if key_file is not None else prog.efuse_key_file
     if key is None:
         log_cb("[efuse] programmer.toml 未声明 [programmer.efuse]，无法写锁")
         return False

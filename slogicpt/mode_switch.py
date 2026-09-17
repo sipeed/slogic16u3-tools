@@ -48,7 +48,8 @@ def reconfig(vid: int, pid: int, log_cb: Callable[[str], None] | None = None) ->
         if log_cb:
             log_cb(msg)
 
-    dev = usb.core.find(idVendor=vid, idProduct=pid)
+    from .device_watch import libusb_backend   # 共用内置/系统 libusb 后端
+    dev = usb.core.find(idVendor=vid, idProduct=pid, backend=libusb_backend())
     if dev is None:
         raise ModeSwitchError(f"未找到设备 {vid:#06x}:{pid:#06x}，无法发送 RECONFIG")
     try:
