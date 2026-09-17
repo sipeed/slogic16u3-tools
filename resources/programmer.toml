@@ -33,6 +33,8 @@ cable_candidates = [4, 1, 5, 0]    # 4=USB Debugger A, 1=FT2CH, 5=WINUSB, 0=GWU2
 [programmer.flash]                 # 烧空板：把 DFU 位流写入外部 SPI Flash
 image = "firmware/dfu.*"           # 取各产品 firmware/ 下的 dfu 位流（dfu.fs 或 dfu.bin）
 spiaddr = 0x800000                 # 外部 SPI Flash 8M 偏移（golden image 槽）
+timeout_s = 600                    # 烧录专用看门狗：Linux 实测 ~18s，Windows(ftd2xx) 慢 ~10 倍；
+                                   # 顶层 timeout_s=30 只管探测，烧录沿用它会在 ~16% 被杀
 # run 默认 54 = exFlash Erase,Program,Verify Arora V（--fsFile 通吃 .fs/.bin 位流）；
 # 切勿用 55/56（那是 RISC-V "C Bin"，烧位流会写 0 字节）。
 

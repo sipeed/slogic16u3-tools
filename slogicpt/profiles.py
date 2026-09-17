@@ -110,6 +110,9 @@ class FlashOp:
     run: int                         # Gowin op，默认 54（Arora V 位流，.fs/.bin 通用）
     image: Path                      # DFU 位流绝对路径（.fs 或 .bin，均走 --fsFile）
     spiaddr: int                     # 外部 SPI Flash 起始地址
+    # 烧录专用看门狗：Linux 实测 826KB 约 18s，Windows(ftd2xx) 慢 ~10 倍（约 3 分钟）。
+    # 不能沿用探测的 timeout_s=30——30s 只烧到 ~16% 就会被看门狗杀掉。
+    timeout_s: float = 600
 
 
 @dataclass(frozen=True)
@@ -281,6 +284,7 @@ def load_programmer(product_dir: Path,
                 run=int(fraw.get("run", DEFAULT_FLASH_RUN)),
                 image=_resolve_image(product_dir, str(fraw["image"])),
                 spiaddr=int(fraw.get("spiaddr", 0)),
+                timeout_s=float(fraw.get("timeout_s", 600)),
             )
         eraw = {**(shared.get("efuse") or {}), **(praw.get("efuse") or {})}
         key_file = (product_dir / str(eraw["key_file"])).resolve() \

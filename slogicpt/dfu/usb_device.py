@@ -11,13 +11,16 @@ class USBDevice:
         :param pid: 产品ID (Product ID)
         :param interface_num: 使用的接口编号（默认为0）
         """
-        import usb.backend.libusb1
-        backend = usb.backend.libusb1.get_backend()
+        # 与设备检测共用同一 libusb 后端：Windows 优先加载内置的
+        # resources/bin/libusb-1.0.dll（见 device_watch.libusb_backend），
+        # 否则系统查找。旧代码在此自建后端且回退分支传目录名，Windows 无
+        # 系统 libusb 时 DFU 烧写必失败。
+        from ..device_watch import libusb_backend
+        backend = libusb_backend()
         if backend is None:
-            import os
-            backend = usb.backend.libusb1.get_backend(find_library=lambda x: os.getcwd())
-            if backend is None:
-                raise ValueError("未找到libusb1后端，请确保已安装libusb1")
+            raise ValueError(
+                "未找到 libusb 后端（libusb-1.0.dll）：请放入 resources/bin/ "
+                "或安装系统 libusb-1.0")
 
         self.interface_num = interface_num
 
@@ -25,7 +28,7 @@ class USBDevice:
         # 下一笔 bulk 写报 [Errno 5]，下一笔读按精确长度收包报 [Errno 75] Overflow。
         # 实测唯一可靠的复位手段是 dev.reset() + 重枚举，clear_halt/排空都不足以清干净。
         # 因此每次建链前先做一次全设备复位（幂等、无害），复位后端点行为完全正常。
-        dev = usb.core.find(idVendor=vid, idProduct=pid)
+        dev = usb.core.find(idVendor=vid, idProduct=pid, backend=backend)
         if dev is None:
             raise ValueError("设备未找到，请检查VID/PID或连接状态")
         try:
@@ -35,7 +38,7 @@ class USBDevice:
         usb.util.dispose_resources(dev)
         time.sleep(2.0)  # 等待重枚举完成
 
-        self.dev = usb.core.find(idVendor=vid, idProduct=pid)
+        self.dev = usb.core.find(idVendor=vid, idProduct=pid, backend=backend)
         if self.dev is None:
             raise ValueError("复位后未找到设备，请检查连接状态")
 

@@ -16,6 +16,7 @@ cable index).  eFuse write+lock is irreversible.
 """
 from __future__ import annotations
 
+import re
 import subprocess
 import threading
 from dataclasses import dataclass
@@ -52,12 +53,20 @@ _WRITE_FAIL_MARKERS = ("cable failed", "no valid jtag", "id code mismatch",
 
 
 def _device_online(out: str) -> bool:
-    """True when --run 0 read a real device (IDCODE), not a cable/JTAG failure."""
+    """True when --run 0 read a real device IDCODE.
+
+    注意 "Target Device: GW5AT-60B(0x0001481B)" 是对 --device 参数的**回显**，
+    线缆打开、JTAG 链无响应（板未上电/线松）时也会打印，且此时读到
+    "ID Code is: 0x00000000"（或全 F）并正常 "Finished."——必须解析真实 ID 值，
+    不能见回显就当在线（实测 Windows 台架踩过：全零链被误判在线）。"""
     low = out.lower()
     if any(m in low for m in _FAIL_MARKERS):
         return False
-    # a valid read prints "Target Device: ..." and/or a GW5A "ID 0x0001xxxx"
-    return ("target device" in low) or ("id 0x0001" in low) or ("idcode" in low)
+    # Linux 版打 "ID 0x0001481B"，Windows 版打 "ID Code is: 0x00000000"
+    m = re.search(r"id(?: code is)?[:\s]+0x([0-9a-f]{8})", low)
+    if m:
+        return m.group(1) not in ("00000000", "ffffffff")
+    return False   # run 0 总会打印 ID；没有 ID 行即视为未读到器件
 
 
 def _efuse_state(out: str) -> EFuse:
@@ -85,9 +94,14 @@ def _write_ok(rc: int, out: str) -> bool:
 # --- subprocess -------------------------------------------------------------
 
 def _run(prog: Programmer, args: list[str], log_cb: Callable[[str], None],
-         cancel: threading.Event | None) -> tuple[int, str]:
+         cancel: threading.Event | None,
+         timeout_s: float | None = None) -> tuple[int, str]:
     """Run `<cli> <args>`; return (returncode, combined stdout+stderr).
-    Output is also streamed to log_cb.  rc = -1 on launch failure/timeout/cancel."""
+    Output is also streamed to log_cb.  rc = -1 on launch failure/timeout/cancel.
+    `timeout_s` 覆盖 prog.timeout_s——写操作（烧录/切换）远慢于探测，必须给
+    更长的看门狗：实测 Windows(ftd2xx) 烧 826KB 比 Linux 慢约 10 倍，30s 只走到
+    ~16% 就被旧看门狗杀掉（正是"烧到 16% 失败"的根因）。"""
+    t = timeout_s if timeout_s is not None else prog.timeout_s
     argv = [*prog.cli, *args]
     try:
         proc = subprocess.Popen(
@@ -97,7 +111,7 @@ def _run(prog: Programmer, args: list[str], log_cb: Callable[[str], None],
         log_cb(f"[programmer] 启动失败: {e}")
         return -1, ""
     lines: list[str] = []
-    with watchdog(proc, prog.timeout_s, cancel) as fate:
+    with watchdog(proc, t, cancel) as fate:
         assert proc.stdout is not None
         for line in proc.stdout:
             s = line.rstrip()
@@ -106,7 +120,7 @@ def _run(prog: Programmer, args: list[str], log_cb: Callable[[str], None],
                 log_cb(s)
         proc.wait()
     if fate.killed_by:
-        log_cb(f"[programmer] {'已取消' if fate.killed_by == 'cancel' else f'超时 ({prog.timeout_s:.0f}s)'}")
+        log_cb(f"[programmer] {'已取消' if fate.killed_by == 'cancel' else f'超时 ({t:.0f}s)'}")
         return -1, "\n".join(lines)
     return proc.returncode, "\n".join(lines)
 
@@ -175,11 +189,13 @@ def flash(prog: Programmer, cable_index: int | None = None,
         log_cb("[flash] 未找到可用 cable，外置烧录器未连接？")
         return False
     log_cb(f"[flash] 烧空板：device={prog.device} cable-index={cable} "
-           f"run={op.run} --fsFile={img.name} spiaddr={op.spiaddr:#08x}")
+           f"run={op.run} --fsFile={img.name} spiaddr={op.spiaddr:#08x} "
+           f"(看门狗 {op.timeout_s:.0f}s)")
     # --fsFile 接受 .fs / .bin 位流；需绝对路径（op.image 已 resolve）
     rc, out = _run(prog, [*_cable_args(prog.device, cable),
                           "--run", str(op.run), "--fsFile", str(img),
-                          "--spiaddr", f"{op.spiaddr:#08x}"], log_cb, cancel)
+                          "--spiaddr", f"{op.spiaddr:#08x}"], log_cb, cancel,
+                   timeout_s=op.timeout_s)
     ok = _write_ok(rc, out)
     log_cb(f"[flash] {'烧录完成' if ok else '烧录失败'}")
     return ok
@@ -219,8 +235,9 @@ def switch(prog: Programmer, direction: str, cable_index: int | None = None,
         return False
     log_cb(f"[switch] 经外置烧录器切换（{direction}）：device={prog.device} "
            f"cable-index={cable}")
+    # 切换多为 SRAM 写位流（写操作），给比探测长的看门狗
     rc, out = _run(prog, [*_cable_args(prog.device, cable), *args],
-                   log_cb, cancel)
+                   log_cb, cancel, timeout_s=max(prog.timeout_s, 300))
     ok = _write_ok(rc, out)
     log_cb(f"[switch] {'切换命令完成' if ok else '切换命令失败'}")
     return ok
@@ -248,9 +265,11 @@ def efuse_lock(prog: Programmer, cable_index: int | None = None,
         return False
     log_cb(f"[efuse] 写入并锁定 AES 密钥（不可逆）：device={prog.device} "
            f"cable-index={cable} keyFile={key.name}")
+    # 写操作看门狗下限：不可逆操作中途被杀风险最大，宁可多等
     rc, out = _run(prog, [*_cable_args(prog.device, cable),
                           "--keywritefile", "--keyFile", str(key),
-                          "--keylock"], log_cb, cancel)
+                          "--keylock"], log_cb, cancel,
+                   timeout_s=max(prog.timeout_s, 120))
     ok = _write_ok(rc, out)
     log_cb(f"[efuse] {'写锁完成（密钥已写入并锁定）' if ok else '写锁失败'}")
     return ok
@@ -261,6 +280,11 @@ if __name__ == "__main__":
     run0_ok = ("op 0: Target Device: GW5AT-60B(0x0001481B); ID 0x0001481B; "
                "User Code 0x00004946; Status Code 0x7002E020; Finished.")
     run0_bad = "Error: Cable failed to open via the channel"
+    # Windows 台架实抓：线缆能开、板未上电/JTAG 链无响应——回显 Target Device
+    # 且正常 Finished，但真实 ID 全零，必须判离线
+    run0_dead = (" Target Cable: USB Debugger A/1/None/null@2.5MHz\n"
+                 " Target Device: GW5AT-60B(0x0001481B)\n"
+                 " ID Code is: 0x00000000\n Finished.\n Cost 0.07 second(s)")
     kr_locked = "Key1 Sel.\nError: Device Locked!\nValue: 1"
     kr_unlocked = "Key1 Sel.\nValue: 0123456789ABCDEF0123456789ABCDEF\nFinished."
     kr_err = "Error: Cable failed to open via the channel"
@@ -272,6 +296,7 @@ if __name__ == "__main__":
                   "Error: Program and Verify Flash Failed!\n Finished.")
     assert _device_online(run0_ok) is True
     assert _device_online(run0_bad) is False
+    assert _device_online(run0_dead) is False     # 全零 IDCODE = 链无响应
     assert _efuse_state(kr_locked) == "locked"
     assert _efuse_state(kr_unlocked) == "unlocked"
     assert _efuse_state(kr_err) == "unknown"
