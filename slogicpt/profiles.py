@@ -83,6 +83,25 @@ class CaptureTest:
 # 本模块传入的 image 已 .resolve() 为绝对路径。
 DEFAULT_FLASH_RUN = 54
 
+# 烧空板探测线缆的默认候选（逐个试 --cable-index，首个读到本 device 的即用）：
+# 覆盖各台架常见值——4=USB Debugger A，1=FT2CH，5=Gowin USB Cable(WINUSB)，0=GWU2X。
+DEFAULT_CABLES = [4, 1, 5, 0]
+
+
+def _resolve_image(product_dir: Path, spec: str) -> Path:
+    """把 DFU 镜像声明解析为绝对路径。spec 含通配符（如 firmware/dfu.*）时在产品
+    目录内匹配：优先 .fs 再 .bin，取唯一/首个匹配；无匹配则返回字面路径（交由
+    check_resources 报缺失）。"""
+    if "*" in spec or "?" in spec:
+        hits = sorted(product_dir.glob(spec))
+        for ext in (".fs", ".bin"):
+            for h in hits:
+                if h.suffix.lower() == ext:
+                    return h.resolve()
+        if hits:
+            return hits[0].resolve()
+    return (product_dir / spec).resolve()
+
 
 @dataclass(frozen=True)
 class FlashOp:
@@ -238,27 +257,34 @@ def load_programmer(product_dir: Path,
     praw = doc.get("programmer")
     if praw is None:
         return None, [f"programmer.toml 缺 [programmer] 段: {f}"]
+    if "device" not in praw:
+        # device 是唯一各产品必填、无默认的字段（IDCODE 校验必须精确匹配）
+        return None, [f"programmer.toml [programmer] 缺 device: {f}"]
     try:
-        # cli 优先级：产品档案 -> 共享 resources/programmer.toml -> 平台默认
+        # 以下各项：产品档案覆盖 -> 共享 resources/programmer.toml -> 代码默认。
+        # cli 优先级
         cli = (_cli_from(praw.get(f"cli_{PLATFORM_KEY}", praw.get("cli")), product_dir)
                or _cli_from(shared.get(f"cli_{PLATFORM_KEY}", shared.get("cli")),
                             RESOURCES_DIR)
                or _default_cli())
-        cables = [int(c) for c in praw.get("cable_candidates", [])]
+        # cable_candidates：产品 -> 共享 -> 代码默认（覆盖各台架常见 index，逐个试）
+        cables = [int(c) for c in (praw.get("cable_candidates")
+                                   or shared.get("cable_candidates") or DEFAULT_CABLES)]
         if not cables:
             raise ValueError("cable_candidates 为空")
 
+        # flash / efuse：共享默认 + 产品覆盖（按键合并）
+        fraw = {**(shared.get("flash") or {}), **(praw.get("flash") or {})}
         flash = None
-        fraw = praw.get("flash")
-        if fraw is not None:
+        if fraw.get("image"):
             flash = FlashOp(
-                run=int(fraw["run"]) if "run" in fraw else DEFAULT_FLASH_RUN,
-                image=(product_dir / str(fraw["image"])).resolve(),
+                run=int(fraw.get("run", DEFAULT_FLASH_RUN)),
+                image=_resolve_image(product_dir, str(fraw["image"])),
                 spiaddr=int(fraw.get("spiaddr", 0)),
             )
-        eraw = praw.get("efuse")
+        eraw = {**(shared.get("efuse") or {}), **(praw.get("efuse") or {})}
         key_file = (product_dir / str(eraw["key_file"])).resolve() \
-            if eraw is not None else None
+            if eraw.get("key_file") else None
 
         switch: dict[str, list[str]] = {}
         sraw = praw.get("switch")

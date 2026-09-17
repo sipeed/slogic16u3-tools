@@ -1,35 +1,18 @@
-# SLogic16U3 外置烧录器命令声明（公开，入库）
+# SLogic16U3 外置烧录器声明（公开，入库）
 #
-# 探测 / eFuse 读 / 烧空板 / eFuse 写锁 —— 四种操作都是同一个 `cli` argv 前缀
-# + 参数 + 资源文件（firmware/dfu.fs、firmware/efuse.ekey）。不再需要包装脚本。
-#
-# 组装规则（cli 之后按操作追加）：
-#   探测/读器件   --device D --cable-index c --run 0
-#   eFuse 读      --device D --cable-index c --keyread
-#   烧空板        --device D --cable-index c --run <auto> --fsFile <image> --spiaddr <addr>
-#   eFuse 写+锁   --device D --cable-index c --keywritefile --keyFile <key_file> --keylock
-#   保底切换      --device D --cable-index c <switch.dfu2app / switch.app2dfu 参数>
+# 绝大多数字段（cli / cable_candidates / [programmer.flash] / [programmer.efuse]）都在
+# 共享 resources/programmer.toml 里给了默认值——**这里通常只需声明 device 一项**
+# （device 是唯一各产品不同、必填、无默认的字段：IDCODE 必须精确匹配）。
+# 需要时才在本文件按同名键覆盖默认（cable_candidates 整体覆盖；flash/efuse 按键合并）。
 schema_version = 1
 
 [programmer]
-# cli（所有操作的 argv 前缀）不在此声明——16U3/32U3 共用，集中在 resources/programmer.toml。
-# 仅当本产品需用不同烧录器时才在此加 cli/cli_windows 覆盖（首元素相对路径按本目录解析）。
 device = "GW5AT-15A"               # SLogic16U3 = Gowin GW5AT-15A（IDCODE 0x0001681B）
-cable_candidates = [4, 1, 5]       # 逐个试 --cable-index：4=USB Debugger A，1=FT2CH，5=WINUSB
 
-[programmer.flash]                 # 烧空板：把 DFU 位流写入外部 SPI Flash，上电从此启动
-image = "firmware/dfu.fs"          # 16U3 工具链导出 .fs 位流（工厂放置，gitignore）
-# run 默认 54 = exFlash Erase,Program,Verify Arora V（--fsFile 通吃 .fs/.bin 位流）。
-# 切勿用 55/56：那是 RISC-V 软核固件的 "C Bin"，烧位流会写 0 字节、Verify 失败。
-spiaddr = 0x800000                 # 外部 SPI Flash 8M 偏移（golden image 槽，16U3/32U3 相同）
-
-[programmer.efuse]                 # eFuse AES 密钥写入 + 锁定（不可逆）
-key_file = "firmware/efuse.ekey"   # Gowin .ekey 密钥文件（机密，绝不入库）
-
+# --- 可选覆盖（默认见 resources/programmer.toml）---
+# cable_candidates = [4, 1, 5]     # 调整探测顺序（默认 [4, 1, 5, 0]）
+# [programmer.flash]
+# image = "firmware/dfu.fs"        # 默认 glob firmware/dfu.*，通常无需指定
 # [programmer.switch]              # DFU<->APP 保底切换（产品不支持 USB RECONFIG 时用）
-# 每方向一组参数，追加在公共前缀 <cli> --device D --cable-index c 之后；
-# 含 "/" 的 token 视为本产品目录相对路径（如引用 firmware/ 下的位流）。
-# 未声明（或引用文件缺失）-> 该方向回退 GUI 弹窗提示按板载 MODE 按键。
-# 示例（经 JTAG 向 SRAM 写入另一份位流，具体 run 码/镜像按实际工艺填）：
-# dfu2app = ["--run", "52", "--fsFile", "firmware/app_sram.fs"]
+# dfu2app = ["--run", "52", "--fsFile", "firmware/app_sram.fs"]  # 含 "/" 按本目录解析
 # app2dfu = ["--run", "52", "--fsFile", "firmware/dfu.fs"]

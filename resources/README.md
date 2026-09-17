@@ -6,10 +6,10 @@
 
 ```
 resources/
-├── programmer.toml               # 共享烧录器命令（cli / cli_windows / timeout），公开入库
+├── programmer.toml               # 共享烧录器默认（cli/cable/flash/efuse/timeout），公开入库
 ├── products/<product_id>/        # 一产品一目录，目录名 = product_id
 │   ├── product.toml              # 产品档案（USB PID / 通道 / 带宽 / 期望信号 / 模式切换），公开入库
-│   ├── programmer.toml           # 本产品的 device / cable / flash / efuse / switch，公开入库
+│   ├── programmer.toml           # 通常仅一行 device；其余继承共享默认，公开入库
 │   └── firmware/                 # 固件与烧录资源（工厂本地，禁止入库/公开）
 │       ├── app.bin               #   应用固件（DFU 模式下经 SPI Flash 写入）
 │       ├── dfu.fs / dfu.bin      #   空板刷机位流（16U3=.fs / 32U3=.bin，均经 --fsFile）
@@ -23,11 +23,14 @@ resources/
     └── libusb-1.0.dll                     # Windows：pyusb 后端（见下文跨平台）
 ```
 
-> **cli 是共享的**：16U3/32U3 用同一 Gowin Programmer，`cli`/`cli_windows` 集中在
-> `resources/programmer.toml`（不再散在各产品档案里）。各 `products/<id>/programmer.toml`
-> 只声明本产品不同的 device/cable/flash/efuse/switch。解析优先级：产品档案 → 共享
-> `resources/programmer.toml` → 代码内平台默认（Linux glob `Gowin-Programmer*.AppImage`；
-> Windows `bin/Programmer/bin/programmer_cli.exe`）。
+> **烧录器配置绝大多数是共享的**：16U3/32U3 用同一 Gowin Programmer，`cli`/`cli_windows`、
+> `cable_candidates`、`[programmer.flash]`（含 `image` 的 glob `firmware/dfu.*`、`spiaddr`）、
+> `[programmer.efuse]`（`key_file`）都集中在 `resources/programmer.toml` 给默认值。
+> **各 `products/<id>/programmer.toml` 通常只需一行 `device`**（唯一各产品不同、必填、
+> 无默认的字段——IDCODE 必须精确匹配）；需要时才按同名键覆盖（`cable_candidates` 整体
+> 覆盖，`flash`/`efuse` 按键合并）。解析优先级：产品档案 → 共享 → 代码内默认
+>（cli：Linux glob `Gowin-Programmer*.AppImage` / Windows `bin/Programmer/bin/programmer_cli.exe`；
+> cable：`[4,1,5,0]`；flash run：54）。
 
 ## 放置示例（Linux 工位）
 
@@ -56,30 +59,40 @@ cp efuse.ekey           resources/products/slogic16u3/firmware/efuse.ekey
 | eFuse 写入并锁定（不可逆） | `<cli> --device D --cable-index c --keywritefile --keyFile <key> --keylock` |
 | DFU↔APP 保底切换 | `<cli> --device D --cable-index c <switch.dfu2app / app2dfu 参数>` |
 
+共享 `resources/programmer.toml`（给所有产品的默认值）：
+
 ```toml
 schema_version = 1
 
 [programmer]
-# cli 可省略：默认 glob resources/bin/Gowin-Programmer*.AppImage + "--programmer-cli"
-# cli = ["../../bin/Gowin-Programmer-....AppImage", "--programmer-cli"]  # 覆盖默认
-# cli_windows = ["C:/Gowin/Programmer/bin/programmer_cli.exe"]          # 按平台覆盖
-device = "GW5AT-15A"           # 16U3；32U3 = "GW5AT-60B"
-cable_candidates = [4, 1, 5]   # 按顺序试，首个读到器件的即用；32U3 = [5, 4, 1]
+# cli 可省略：默认 Linux glob resources/bin/Gowin-Programmer*.AppImage + "--programmer-cli"，
+# Windows 用 resources/bin/Programmer/bin/programmer_cli.exe。含 "/" 路径按 resources/ 解析。
+cli         = ["bin/Gowin-Programmer-x86_64.AppImage", "--programmer-cli"]
+cli_windows = ["bin/Programmer/bin/programmer_cli.exe"]
 timeout_s = 30
+cable_candidates = [4, 1, 5, 0]   # 逐个试，首个读到本 device 的即用（顺序只影响速度）
 
-[programmer.flash]             # 空板烧写；缺省 → 无烧空板能力
-image = "firmware/dfu.fs"      # 相对产品目录；32U3 = "firmware/dfu.bin"（.fs/.bin 位流皆可）
+[programmer.flash]                # 空板烧写
+image = "firmware/dfu.*"          # glob 各产品 firmware/ 下的 dfu 位流（dfu.fs 或 dfu.bin）
+spiaddr = 0x800000                # 外部 SPI Flash 8M 偏移（golden image 槽）
 # run 默认 54 = exFlash Erase,Program,Verify Arora V（--fsFile 通吃 .fs 与 .bin 位流）。
 # 切勿用 55/56：那是 RISC-V 软核固件的 "C Bin"，烧 FPGA 位流会写 0 字节、Verify 失败。
-spiaddr = 0x800000             # 外部 SPI Flash 8M 偏移（golden image 槽，16U3/32U3 相同）
 
-[programmer.efuse]             # eFuse AES 密钥；缺省 → 烧空板无 eFuse 前置步骤
+[programmer.efuse]                # eFuse AES 密钥；缺省 → 烧空板无 eFuse 前置步骤
 key_file = "firmware/efuse.ekey"
+```
 
+各 `products/<id>/programmer.toml` 通常只需：
+
+```toml
+schema_version = 1
+[programmer]
+device = "GW5AT-15A"           # 唯一各产品不同、必填、无默认；32U3 = "GW5AT-60B"
+# 需要时才覆盖默认（cable_candidates 整体覆盖；[programmer.flash]/[programmer.efuse] 按键合并）：
+# cable_candidates = [5, 4, 1]
 # [programmer.switch]          # DFU↔APP 保底切换（产品不支持 USB RECONFIG 时）
-# dfu2app = ["--run", "52", "--fsFile", "firmware/app_sram.fs"]
+# dfu2app = ["--run", "52", "--fsFile", "firmware/app_sram.fs"]  # 含 "/" 按本产品目录解析
 # app2dfu = ["--run", "52", "--fsFile", "firmware/dfu.fs"]
-# 每方向一组参数，追加在公共前缀之后；含 "/" 的 token 按产品目录解析为绝对路径。
 ```
 
 > **eFuse 与烧空板的关系**：DFU 位流是 AES 加密的，FPGA 须先把密钥写入 eFuse

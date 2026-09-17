@@ -9,6 +9,10 @@
 # 下一优先级（因此下面写版本无关名、而工位实际放了带版本号的 AppImage 时，代码会
 # glob 兜底找到它，仍可用）。
 
+# 除 device 外，各产品 programmer.toml 通常什么都不用写——下面这些都是共享默认，
+# 需要时才在 products/<id>/programmer.toml 里按同名键覆盖（cable_candidates 整体覆盖；
+# [programmer.flash] / [programmer.efuse] 按键合并）。含 "/" 的路径按各产品目录解析。
+
 schema_version = 1
 
 [programmer]
@@ -21,3 +25,16 @@ cli = ["bin/Gowin-Programmer-x86_64.AppImage", "--programmer-cli"]
 cli_windows = ["bin/Programmer/bin/programmer_cli.exe"]
 
 timeout_s = 30
+
+# 探测线缆候选：逐个试 --cable-index，首个读到本 device 的即用（读不到本 device
+# 的会 IDCODE 不符而跳过，故顺序只影响速度、不会连错）。
+cable_candidates = [4, 1, 5, 0]    # 4=USB Debugger A, 1=FT2CH, 5=WINUSB, 0=GWU2X
+
+[programmer.flash]                 # 烧空板：把 DFU 位流写入外部 SPI Flash
+image = "firmware/dfu.*"           # 取各产品 firmware/ 下的 dfu 位流（dfu.fs 或 dfu.bin）
+spiaddr = 0x800000                 # 外部 SPI Flash 8M 偏移（golden image 槽）
+# run 默认 54 = exFlash Erase,Program,Verify Arora V（--fsFile 通吃 .fs/.bin 位流）；
+# 切勿用 55/56（那是 RISC-V "C Bin"，烧位流会写 0 字节）。
+
+[programmer.efuse]                 # eFuse AES 密钥写入 + 锁定（不可逆）
+key_file = "firmware/efuse.ekey"   # 各产品 firmware/ 下的 .ekey（机密，绝不入库）
