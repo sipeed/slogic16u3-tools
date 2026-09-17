@@ -93,16 +93,11 @@ def _write_ok(rc: int, out: str) -> bool:
 
 # --- subprocess -------------------------------------------------------------
 
-def _run(prog: Programmer, args: list[str], log_cb: Callable[[str], None],
-         cancel: threading.Event | None,
-         timeout_s: float | None = None) -> tuple[int, str]:
-    """Run `<cli> <args>`; return (returncode, combined stdout+stderr).
-    Output is also streamed to log_cb.  rc = -1 on launch failure/timeout/cancel.
-    `timeout_s` 覆盖 prog.timeout_s——写操作（烧录/切换）远慢于探测，必须给
-    更长的看门狗：实测 Windows(ftd2xx) 烧 826KB 比 Linux 慢约 10 倍，30s 只走到
-    ~16% 就被旧看门狗杀掉（正是"烧到 16% 失败"的根因）。"""
-    t = timeout_s if timeout_s is not None else prog.timeout_s
-    argv = [*prog.cli, *args]
+def _run_argv(argv: list[str], timeout_s: float,
+              log_cb: Callable[[str], None],
+              cancel: threading.Event | None) -> tuple[int, str]:
+    """Run a full argv; return (returncode, combined stdout+stderr).
+    Output is also streamed to log_cb.  rc = -1 on launch failure/timeout/cancel."""
     try:
         proc = subprocess.Popen(
             argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -111,7 +106,7 @@ def _run(prog: Programmer, args: list[str], log_cb: Callable[[str], None],
         log_cb(f"[programmer] 启动失败: {e}")
         return -1, ""
     lines: list[str] = []
-    with watchdog(proc, t, cancel) as fate:
+    with watchdog(proc, timeout_s, cancel) as fate:
         assert proc.stdout is not None
         for line in proc.stdout:
             s = line.rstrip()
@@ -120,9 +115,20 @@ def _run(prog: Programmer, args: list[str], log_cb: Callable[[str], None],
                 log_cb(s)
         proc.wait()
     if fate.killed_by:
-        log_cb(f"[programmer] {'已取消' if fate.killed_by == 'cancel' else f'超时 ({t:.0f}s)'}")
+        log_cb(f"[programmer] {'已取消' if fate.killed_by == 'cancel' else f'超时 ({timeout_s:.0f}s)'}")
         return -1, "\n".join(lines)
     return proc.returncode, "\n".join(lines)
+
+
+def _run(prog: Programmer, args: list[str], log_cb: Callable[[str], None],
+         cancel: threading.Event | None,
+         timeout_s: float | None = None) -> tuple[int, str]:
+    """Run `<cli> <args>`（Gowin CLI 前缀形态）。`timeout_s` 覆盖
+    prog.timeout_s——写操作（烧录/切换）远慢于探测，必须给更长的看门狗：实测
+    Windows 烧 826KB 比 Linux 慢约 10 倍，30s 只走到 ~16% 就被旧看门狗杀掉
+    （正是"烧到 16% 失败"的根因）。"""
+    t = timeout_s if timeout_s is not None else prog.timeout_s
+    return _run_argv([*prog.cli, *args], t, log_cb, cancel)
 
 
 def _cable_args(device: str, cable: int) -> list[str]:
@@ -173,9 +179,6 @@ def flash(prog: Programmer, cable_index: int | None = None,
           cancel: threading.Event | None = None) -> bool:
     """Blank-flash: program the DFU image into external SPI flash.
     `image` 覆盖 op.image（GUI 会话级资源路径覆盖）。"""
-    if not prog.cli:
-        log_cb("[flash] 未找到烧录器 CLI，无法烧录")
-        return False
     op = prog.flash
     if op is None:
         log_cb("[flash] programmer.toml 未声明 [programmer.flash]，无法烧录")
@@ -183,6 +186,22 @@ def flash(prog: Programmer, cable_index: int | None = None,
     img = image if image is not None else op.image
     if not img.is_file():
         log_cb(f"[flash] DFU 镜像缺失: {img}")
+        return False
+    if op.argv:
+        # 自定义烧录命令（如 openFPGALoader，Windows 上比 Gowin exe 快 ~15 倍）：
+        # 完整命令自带线缆参数，不依赖 Gowin cli/cable 探测。写入正确性已用
+        # Gowin --run 66 (exFlash Verify) 交叉校验过。
+        argv = [a.replace("{image}", str(img))
+                 .replace("{spiaddr}", f"{op.spiaddr:#x}") for a in op.argv]
+        log_cb(f"[flash] 烧空板（自定义命令，看门狗 {op.timeout_s:.0f}s）: "
+               f"{' '.join(argv)}")
+        rc, out = _run_argv(argv, op.timeout_s, log_cb, cancel)
+        low = out.lower()
+        ok = rc == 0 and "error" not in low and "fail" not in low
+        log_cb(f"[flash] {'烧录完成' if ok else '烧录失败'}")
+        return ok
+    if not prog.cli:
+        log_cb("[flash] 未找到烧录器 CLI，无法烧录")
         return False
     cable = _resolve_cable(prog, cable_index, log_cb, cancel)
     if cable is None:
@@ -300,6 +319,12 @@ if __name__ == "__main__":
     assert _efuse_state(kr_locked) == "locked"
     assert _efuse_state(kr_unlocked) == "unlocked"
     assert _efuse_state(kr_err) == "unknown"
+    # 自定义烧录命令的模板替换（openFPGALoader 形态）
+    _tpl = ["openFPGALoader.exe", "-c", "ft2232", "--external-flash",
+            "-o", "{spiaddr}", "{image}"]
+    _sub = [a.replace("{image}", "/x/dfu.bin").replace("{spiaddr}", "0x800000")
+            for a in _tpl]
+    assert _sub[-2:] == ["0x800000", "/x/dfu.bin"]
     assert _write_ok(0, flash_ok) is True
     assert _write_ok(0, flash_bad) is False
     assert _write_ok(0, flash_bad2) is False      # Error:+Finished 同现 -> 失败

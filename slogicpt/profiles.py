@@ -105,14 +105,20 @@ def _resolve_image(product_dir: Path, spec: str) -> Path:
 
 @dataclass(frozen=True)
 class FlashOp:
-    """烧空板：把 DFU 位流写入外部 SPI Flash 的 Gowin CLI 参数。
-    组装为 `<cli> --device D --cable-index c --run <run> --fsFile <image> --spiaddr <addr>`。"""
+    """烧空板：把 DFU 位流写入外部 SPI Flash。
+    默认组装 Gowin CLI：`<cli> --device D --cable-index c --run <run> --fsFile <image>
+    --spiaddr <addr>`；声明了 argv 时改跑自定义完整命令（如 openFPGALoader），
+    模板变量 {image}/{spiaddr} 运行时替换，不加 Gowin cli/cable 前缀。"""
     run: int                         # Gowin op，默认 54（Arora V 位流，.fs/.bin 通用）
     image: Path                      # DFU 位流绝对路径（.fs 或 .bin，均走 --fsFile）
     spiaddr: int                     # 外部 SPI Flash 起始地址
-    # 烧录专用看门狗：Linux 实测 826KB 约 18s，Windows(ftd2xx) 慢 ~10 倍（约 3 分钟）。
-    # 不能沿用探测的 timeout_s=30——30s 只烧到 ~16% 就会被看门狗杀掉。
+    # 烧录专用看门狗：Linux Gowin 实测 826KB 约 18s，Windows(Gowin exe) 慢 ~10 倍
+    # （约 3 分钟，与驱动/频率无关），openFPGALoader 约 12s。不能沿用探测的
+    # timeout_s=30——30s 只烧到 ~16% 就会被看门狗杀掉。
     timeout_s: float = 600
+    # 自定义烧录命令（可按平台 argv_windows/argv_linux 覆盖）。实测 Gowin Windows
+    # 版 exe 本身慢 10 倍且无法调优，Windows 用 openFPGALoader 提速 15 倍。
+    argv: list[str] | None = None
 
 
 @dataclass(frozen=True)
@@ -280,11 +286,16 @@ def load_programmer(product_dir: Path,
         fraw = {**(shared.get("flash") or {}), **(praw.get("flash") or {})}
         flash = None
         if fraw.get("image"):
+            # 自定义烧录命令：按平台取 argv_<plat>/argv，首元素按 resources/ 解析；
+            # 可执行文件缺失时 _cli_from 返回 [] -> 自动回退 Gowin 默认命令形态
+            fargv = _cli_from(fraw.get(f"argv_{PLATFORM_KEY}", fraw.get("argv")),
+                              RESOURCES_DIR) or None
             flash = FlashOp(
                 run=int(fraw.get("run", DEFAULT_FLASH_RUN)),
                 image=_resolve_image(product_dir, str(fraw["image"])),
                 spiaddr=int(fraw.get("spiaddr", 0)),
                 timeout_s=float(fraw.get("timeout_s", 600)),
+                argv=fargv,
             )
         eraw = {**(shared.get("efuse") or {}), **(praw.get("efuse") or {})}
         key_file = (product_dir / str(eraw["key_file"])).resolve() \

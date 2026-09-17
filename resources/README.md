@@ -152,6 +152,19 @@ GUI 顶栏"⚠ 警告"角标里的每一条都对应一个待放置/待确认项
 - **Windows 烧录器**：把整个 Gowin `Programmer` 文件夹拷进 `bin/Programmer/`（相当于
   Linux 的软链，只是 Windows 用拷贝），默认即用 `bin/Programmer/bin/programmer_cli.exe`，
   通常无需改配置；放在别处则在共享 `programmer.toml` 改 `cli_windows`。
+- **Windows 烧录提速（openFPGALoader）**：实测 Gowin Windows 版 `programmer_cli.exe`
+  烧写比 Linux 版慢 ~10 倍（826KB 约 175s，与 `--frequency`/FTDI LatencyTimer/驱动均无关，
+  是其 exe 自身实现），而 openFPGALoader 仅 **~12s（快 15 倍）**，写入内容已用 Gowin
+  `--run 66`（exFlash Verify）交叉校验一致。共享 `programmer.toml` 的
+  `[programmer.flash] argv_windows` 已默认声明走 openFPGALoader；工位放置：
+  1. 把 openFPGALoader.exe + 依赖 DLL（libftdi1/libusb-1.0/zlib1/libgcc/libstdc++/
+     libwinpthread，来自 MSYS2 mingw64 包）放到 `bin/openFPGALoader/`；
+  2. **一次性**给 FTDI 线缆 A 通道装 WinUSB 驱动（命令行免点击，`wdi-simple.exe`
+     也放在 `bin/openFPGALoader/`）：
+     `bin\openFPGALoader\wdi-simple.exe -v 0x0403 -p 0x6010 -i 0 -t 0 -n "USB Serial Converter A (WinUSB)"`
+     装完 Gowin 的探测/eFuse 自动改走 `cable-index 5`（WINUSB），ftd2xx 的 4/1 失效属预期；
+  3. 回退：删掉共享 `programmer.toml` 里的 `argv_windows` 行即回到 Gowin 慢速烧录
+     （可执行文件缺失时代码也会自动回退）。
 - **libusb 后端**：本工具用 pyusb 枚举 USB 设备（DFU/APP 检测、RECONFIG 切换）。
   - 推荐**把 `libusb-1.0.dll` 内置到 `resources/bin/`**——LGPL 允许随项目分发，工位免装依赖；
     工具会**优先加载这个内置 DLL**（见 `slogicpt/device_watch.libusb_backend`），`build.py`

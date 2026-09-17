@@ -28,13 +28,23 @@ timeout_s = 30
 
 # 探测线缆候选：逐个试 --cable-index，首个读到本 device 的即用（读不到本 device
 # 的会 IDCODE 不符而跳过，故顺序只影响速度、不会连错）。
-cable_candidates = [4, 1, 5, 0]    # 4=USB Debugger A, 1=FT2CH, 5=WINUSB, 0=GWU2X
+# 5 放最前：Linux 台架与装了 WinUSB 驱动的 Windows 台架都命中 5。
+cable_candidates = [5, 4, 1, 0]    # 5=WINUSB, 4=USB Debugger A, 1=FT2CH, 0=GWU2X
 
 [programmer.flash]                 # 烧空板：把 DFU 位流写入外部 SPI Flash
 image = "firmware/dfu.*"           # 取各产品 firmware/ 下的 dfu 位流（dfu.fs 或 dfu.bin）
 spiaddr = 0x800000                 # 外部 SPI Flash 8M 偏移（golden image 槽）
-timeout_s = 600                    # 烧录专用看门狗：Linux 实测 ~18s，Windows(ftd2xx) 慢 ~10 倍；
-                                   # 顶层 timeout_s=30 只管探测，烧录沿用它会在 ~16% 被杀
+timeout_s = 600                    # 烧录专用看门狗：顶层 timeout_s=30 只管探测，
+                                   # 烧录沿用它会在中途被杀（Gowin Windows 版 ~3 分钟）
+# Windows 烧录改走 openFPGALoader：实测 Gowin Windows 版 exe 慢 10 倍（175s，与
+# 频率/LatencyTimer/驱动无关），openFPGALoader 仅 ~12s（快 15 倍），写入内容已用
+# Gowin --run 66 交叉校验一致。模板变量 {image}/{spiaddr} 运行时替换；首元素按
+# resources/ 解析，可执行文件缺失时自动回退上面的 Gowin 命令形态。
+# 前置（一次性）：FTDI A 通道需 WinUSB 驱动 ——
+#   Downloads\wdi-simple.exe -v 0x0403 -p 0x6010 -i 0 -t 0 -n "USB Serial Converter A (WinUSB)"
+# （装完 Gowin 探测/eFuse 自动改走 cable-index 5；删掉下行即回退 Gowin 慢速烧录。）
+argv_windows = ["bin/openFPGALoader/openFPGALoader.exe", "-c", "ft2232",
+                "--external-flash", "-o", "{spiaddr}", "{image}"]
 # run 默认 54 = exFlash Erase,Program,Verify Arora V（--fsFile 通吃 .fs/.bin 位流）；
 # 切勿用 55/56（那是 RISC-V "C Bin"，烧位流会写 0 字节）。
 
