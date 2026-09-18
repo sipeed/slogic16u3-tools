@@ -23,6 +23,7 @@ from . import flasher
 from . import mode_switch as mode_switch_mod
 from . import programmer as programmer_mod
 from . import waveform
+from .i18n import t
 from .profiles import OUTPUT_DIR, ProductProfile, format_rate
 from .sigrok import CaptureError, SigrokCli
 
@@ -59,6 +60,19 @@ class PipelineAbort(Exception):
     pass
 
 
+# Step-id -> English label. Shared by sequence_plan() and _sequence_defs() so
+# the two step lists never drift; each label is wrapped in t() at use sites.
+STEP_LABELS: dict[str, str] = {
+    "blank:efuse": "Blank-flash · eFuse key write-lock",
+    "blank:flash": "Blank-flash · write DFU image",
+    "wait_dfu": "Wait for DFU device",
+    "flash_app": "DFU flash app firmware",
+    "switch_app": "Switch to APP mode",
+    "wait_app": "Wait for APP device",
+    "switch_dfu": "Switch to DFU mode",
+}
+
+
 def sequence_plan(profile: ProductProfile) -> list[tuple[str, str]]:
     """(id, label) of the linear production sequence, without a Pipeline
     instance -- the GUI builds its step list from this so ids always match."""
@@ -68,15 +82,16 @@ def sequence_plan(profile: ProductProfile) -> list[tuple[str, str]]:
         # 加密 DFU 位流须先把 AES 密钥写入 eFuse 才能启动（lock 防密钥读出），
         # 故 eFuse 写锁是烧空板的前置步骤：未锁 -> 写入并锁定；已锁 -> 跳过。
         if prog.efuse_key_file is not None:
-            plan.append(("blank:efuse", "烧空板 · eFuse 密钥写锁"))
-        plan.append(("blank:flash", "烧空板 · 烧写 DFU 镜像"))
-    plan.append(("wait_dfu", "等待 DFU 设备"))
-    plan.append(("flash_app", "DFU 烧写应用固件"))
-    plan.append(("switch_app", "切换到 APP 模式"))
-    plan.append(("wait_app", "等待 APP 设备"))
-    for i, t in enumerate(profile.capture_tests):
+            plan.append(("blank:efuse", t(STEP_LABELS["blank:efuse"])))
+        plan.append(("blank:flash", t(STEP_LABELS["blank:flash"])))
+    plan.append(("wait_dfu", t(STEP_LABELS["wait_dfu"])))
+    plan.append(("flash_app", t(STEP_LABELS["flash_app"])))
+    plan.append(("switch_app", t(STEP_LABELS["switch_app"])))
+    plan.append(("wait_app", t(STEP_LABELS["wait_app"])))
+    for i, ct in enumerate(profile.capture_tests):
         plan.append((f"capture:{i}",
-                     f"采样验证 {t.channels}ch@{format_rate(t.samplerate_hz)}"))
+                     t("Capture {ch}ch@{rate}").format(
+                         ch=ct.channels, rate=format_rate(ct.samplerate_hz))))
     return plan
 
 
@@ -99,20 +114,21 @@ class Pipeline:
         prog = self.profile.programmer
         if prog is not None and prog.flash is not None:
             if prog.efuse_key_file is not None:
-                defs.append(StepDef("blank:efuse", "烧空板 · eFuse 密钥写锁",
+                defs.append(StepDef("blank:efuse", t(STEP_LABELS["blank:efuse"]),
                                     self._efuse_ensure))
-            defs.append(StepDef("blank:flash", "烧空板 · 烧写 DFU 镜像",
+            defs.append(StepDef("blank:flash", t(STEP_LABELS["blank:flash"]),
                                 self._flash_blank))
-        defs.append(StepDef("wait_dfu", "等待 DFU 设备", self._wait_dfu))
-        defs.append(StepDef("flash_app", "DFU 烧写应用固件", self._flash_app))
-        defs.append(StepDef("switch_app", "切换到 APP 模式", self._switch_to_app))
-        defs.append(StepDef("wait_app", "等待 APP 设备", self._wait_app))
-        for i, t in enumerate(self.profile.capture_tests):
+        defs.append(StepDef("wait_dfu", t(STEP_LABELS["wait_dfu"]), self._wait_dfu))
+        defs.append(StepDef("flash_app", t(STEP_LABELS["flash_app"]), self._flash_app))
+        defs.append(StepDef("switch_app", t(STEP_LABELS["switch_app"]), self._switch_to_app))
+        defs.append(StepDef("wait_app", t(STEP_LABELS["wait_app"]), self._wait_app))
+        for i, ct in enumerate(self.profile.capture_tests):
             defs.append(StepDef(
                 f"capture:{i}",
-                f"采样验证 {t.channels}ch@{format_rate(t.samplerate_hz)}",
-                lambda t=t: self._capture_one(
-                    t.channels, t.samplerate_hz, t.samples,
+                t("Capture {ch}ch@{rate}").format(
+                    ch=ct.channels, rate=format_rate(ct.samplerate_hz)),
+                lambda ct=ct: self._capture_one(
+                    ct.channels, ct.samplerate_hz, ct.samples,
                     self.profile.voltage_threshold_v, None),
                 abort_on_fail=False))
         return defs
@@ -143,7 +159,7 @@ class Pipeline:
         p._efuse_key_override = efuse_key_override
         matches = [d for d in p._sequence_defs() if d.id == step_id]
         if not matches:
-            raise ValueError(f"未知步骤: {step_id}")
+            raise ValueError(t("Unknown step: {step_id}").format(step_id=step_id))
         p.steps = matches
         return p
 
@@ -156,7 +172,8 @@ class Pipeline:
                      ) -> "Pipeline":
         """Custom capture+verify with operator-tweaked parameters."""
         p = cls(profile, sigrok, callbacks, [])
-        label = f"自定义采样 {channels}ch@{format_rate(samplerate_hz)}"
+        label = t("Custom capture {ch}ch@{rate}").format(
+            ch=channels, rate=format_rate(samplerate_hz))
         p.steps = [StepDef("capture:custom", label, lambda: p._capture_one(
             channels, samplerate_hz, samples, voltage_threshold_v, expected_rows),
             abort_on_fail=False)]
@@ -170,11 +187,11 @@ class Pipeline:
         p = cls(profile, None, callbacks, [])
         p._firmware_override = firmware_path
         p._cable_index = cable_index
-        p.steps = [StepDef("switch_dfu", "切换到 DFU 模式", p._switch_to_dfu),
-                   StepDef("wait_dfu", "等待 DFU 设备", p._wait_dfu),
-                   StepDef("flash_app", "DFU 烧写应用固件", p._flash_app),
-                   StepDef("switch_app", "切换到 APP 模式", p._switch_to_app),
-                   StepDef("wait_app", "等待 APP 设备", p._wait_app)]
+        p.steps = [StepDef("switch_dfu", t(STEP_LABELS["switch_dfu"]), p._switch_to_dfu),
+                   StepDef("wait_dfu", t(STEP_LABELS["wait_dfu"]), p._wait_dfu),
+                   StepDef("flash_app", t(STEP_LABELS["flash_app"]), p._flash_app),
+                   StepDef("switch_app", t(STEP_LABELS["switch_app"]), p._switch_to_app),
+                   StepDef("wait_app", t(STEP_LABELS["wait_app"]), p._wait_app)]
         return p
 
     @classmethod
@@ -187,11 +204,11 @@ class Pipeline:
         p = cls(profile, None, callbacks, [])
         p._cable_index = cable_index
         if to_mode == "app":
-            p.steps = [StepDef("switch_app", "切换到 APP 模式", p._switch_to_app),
-                       StepDef("wait_app", "等待 APP 设备", p._wait_app)]
+            p.steps = [StepDef("switch_app", t(STEP_LABELS["switch_app"]), p._switch_to_app),
+                       StepDef("wait_app", t(STEP_LABELS["wait_app"]), p._wait_app)]
         else:
-            p.steps = [StepDef("switch_dfu", "切换到 DFU 模式", p._switch_to_dfu),
-                       StepDef("wait_dfu", "等待 DFU 设备", p._wait_dfu)]
+            p.steps = [StepDef("switch_dfu", t(STEP_LABELS["switch_dfu"]), p._switch_to_dfu),
+                       StepDef("wait_dfu", t(STEP_LABELS["wait_dfu"]), p._wait_dfu)]
         return p
 
     # ---- lifecycle -------------------------------------------------------
@@ -213,22 +230,23 @@ class Pipeline:
             for step in self.steps:
                 self.cb.on_step(step.id, StepStatus.RUNNING)
                 if self.cancel.is_set():
-                    raise PipelineAbort("已取消")
+                    raise PipelineAbort(t("Cancelled"))
                 ok = step.run()
                 self.cb.on_step(step.id,
                                 StepStatus.PASSED if ok else StepStatus.FAILED)
                 if not ok:
                     all_pass = False
                     if step.abort_on_fail:
-                        raise PipelineAbort(f"步骤「{step.label}」失败")
+                        raise PipelineAbort(
+                            t("Step \"{label}\" failed").format(label=step.label))
         except PipelineAbort as e:
             all_pass = False
-            self._log(f"流程中止: {e}")
-            self.report_lines.append(f"流程中止: {e}")
+            self._log(t("Flow aborted: {e}").format(e=e))
+            self.report_lines.append(t("Flow aborted: {e}").format(e=e))
         except Exception:
             all_pass = False
-            self._log("流程异常:\n" + traceback.format_exc())
-            self.report_lines.append("流程异常，详见日志")
+            self._log(t("Flow exception:") + "\n" + traceback.format_exc())
+            self.report_lines.append(t("Flow exception, see log for details"))
         finally:
             self.cb.on_user_prompt_clear()
             lines = list(self.report_lines)
@@ -255,27 +273,34 @@ class Pipeline:
         if cable is not None:
             self._cable_index = cable   # 后续烧写步骤复用同一 cable
         if state == "locked":
-            self._log("eFuse 已锁定（密钥已写入），跳过写锁")
-            self.report_lines.append("eFuse 写锁: SKIP（已锁定）")
+            self._log(t("eFuse already locked (key written), skipping write-lock"))
+            self.report_lines.append(
+                t("eFuse write-lock") + ": SKIP" + t(" (already locked)"))
             return True
         if state != "unlocked":
-            self._log("无法确认 eFuse 状态（外置烧录器未连接/线缆异常？），中止")
-            self.report_lines.append("eFuse 写锁: FAIL（状态未知）")
+            self._log(t("Cannot confirm eFuse state (external programmer not "
+                        "connected / cable fault?), aborting"))
+            self.report_lines.append(
+                t("eFuse write-lock") + ": FAIL" + t(" (state unknown)"))
             return False
-        self._log("eFuse 未锁：写入 AES 密钥并锁定（加密 DFU 启动前提，不可逆）…")
+        self._log(t("eFuse not locked: writing AES key and locking (prerequisite "
+                    "for encrypted DFU boot, irreversible)..."))
         if not programmer_mod.efuse_lock(
                 prog, self._cable_index, key_file=self._efuse_key_override,
                 log_cb=self._log, cancel=self.cancel):
-            self.report_lines.append("eFuse 写锁: FAIL（写入失败）")
+            self.report_lines.append(
+                t("eFuse write-lock") + ": FAIL" + t(" (write failed)"))
             return False
         # 回读校验：写锁后 --keyread 应报 Device Locked
         state2, _ = programmer_mod.efuse_state(
             prog, self._cable_index, log_cb=self._log, cancel=self.cancel)
         ok = state2 == "locked"
         self.report_lines.append(
-            "eFuse 写锁: " + ("OK（回读确认已锁定）" if ok else "FAIL（回读未确认锁定）"))
+            t("eFuse write-lock") + ": "
+            + ("OK" + t(" (readback confirmed locked)") if ok
+               else "FAIL" + t(" (readback did not confirm locked)")))
         if not ok:
-            self._log("回读 eFuse 未确认锁定，判定失败")
+            self._log(t("eFuse readback did not confirm locked, judged as failed"))
         return ok
 
     def _flash_blank(self) -> bool:
@@ -285,15 +310,17 @@ class Pipeline:
             self.profile.programmer, self._cable_index, image=self._image_override,
             log_cb=self._log, cancel=self.cancel)
         self.report_lines.append(
-            f"烧空板 DFU 镜像: {'OK' if ok else 'FAIL'} "
-            f"({img.name} @ {op.spiaddr:#x})")
+            t("Blank-flash DFU image") + ": " + ("OK" if ok else "FAIL")
+            + f" ({img.name} @ {op.spiaddr:#x})")
         return ok
 
     def _wait_mode(self, pid: int, timeout_s: float, what: str) -> bool:
-        self._log(f"等待 {what} 设备 ({self.profile.vid:#06x}:{pid:#06x})...")
+        self._log(t("Waiting for {what} device ({vid}:{pid})...").format(
+            what=what, vid=f"{self.profile.vid:#06x}", pid=f"{pid:#06x}"))
 
         def ready(manual: bool) -> bool:
-            self._log(f"{what} 设备已就绪" + ("（人工介入后）" if manual else ""))
+            self._log(t("{what} device ready").format(what=what)
+                      + (t(" (after manual intervention)") if manual else ""))
             self._note_serial(pid, what)
             return True
 
@@ -304,8 +331,7 @@ class Pipeline:
             return False
         # timeout -> prompt operator, keep polling indefinitely until cancel
         self.cb.on_user_prompt(
-            f"等待 {what} 设备超时，请重新插拔/上电设备…  "
-            f"(Waiting for {what} device timed out -- please replug)")
+            t("Waiting for {what} device timed out -- please replug").format(what=what))
         self.cb.on_step(f"wait_{what.lower()}", StepStatus.WAITING_USER)
         try:
             while not self.cancel.is_set():
@@ -323,13 +349,14 @@ class Pipeline:
             return
         sn = device_watch.read_serial(self.profile.vid, pid)
         self.app_serial = sn
-        self._log(f"APP SerialNumber: {sn}（用于版本识别/区分）" if sn
-                  else "APP 设备未提供 SerialNumber 描述符")
+        self._log(t("APP SerialNumber: {sn} (for version identification/"
+                    "distinction)").format(sn=sn) if sn
+                  else t("APP device provided no SerialNumber descriptor"))
 
     def _switch_to_app(self) -> bool:
         """DFU->APP：向 DFU 设备触发切换（真正就绪由随后的 wait_app 判定）。"""
         if self.profile.dfu_pid is None:
-            self._log("dfu_pid 未配置，无法切换到 APP")
+            self._log(t("dfu_pid not configured, cannot switch to APP"))
             return False
         return self._switch(from_pid=self.profile.dfu_pid, to_what="APP")
 
@@ -338,7 +365,7 @@ class Pipeline:
         交由 wait_dfu 处理（人工插拔/上电）。"""
         if device_watch.find_pid(self.profile.vid, self.profile.app_pid):
             return self._switch(from_pid=self.profile.app_pid, to_what="DFU")
-        self._log("未检测到 APP 设备，跳过自动切换，直接等待 DFU")
+        self._log(t("No APP device detected, skipping auto-switch, waiting for DFU directly"))
         return True
 
     def _switch(self, from_pid: int, to_what: str) -> bool:
@@ -352,30 +379,31 @@ class Pipeline:
         p = self.profile
         direction = "dfu2app" if to_what == "APP" else "app2dfu"
         if p.switch_usb_reconfig:
-            self._log(f"发送 RECONFIG 切换到 {to_what} 模式 "
-                      f"（{p.vid:#06x}:{from_pid:#06x}）...")
+            self._log(t("Sending RECONFIG to switch to {mode} mode ({vid}:{pid})...").format(
+                mode=to_what, vid=f"{p.vid:#06x}", pid=f"{from_pid:#06x}"))
             try:
                 mode_switch_mod.reconfig(p.vid, from_pid, self._log)
                 return True
             except mode_switch_mod.ModeSwitchError as e:
-                self._log(f"RECONFIG 切换失败: {e}，尝试保底方案…")
+                self._log(t("RECONFIG switch failed: {e}, trying fallback...").format(e=e))
         prog = p.programmer
         if prog is not None and direction in prog.switch:
             if programmer_mod.switch(prog, direction,
                                      cable_index=self._cable_index,
                                      log_cb=self._log, cancel=self.cancel):
                 return True
-            self._log("外置烧录器切换失败，转人工…")
+            self._log(t("External programmer switch failed, falling back to manual..."))
         # 只剩硬件操作：弹窗提示工人按板载 MODE 键，等待步骤兜底确认
-        msg = (f"请按板载 MODE 按键，将 {p.display_name} 切换到 {to_what} 模式；"
-               "检测到目标模式设备后自动继续")
+        msg = t("Please press the onboard MODE button to switch {name} to {mode} "
+                "mode; it will continue automatically once the target-mode device "
+                "is detected").format(name=p.display_name, mode=to_what)
         self._log(msg)
         self.cb.on_manual_switch(msg)
         return True
 
     def _wait_dfu(self) -> bool:
         if self.profile.dfu_pid is None:
-            self._log(f"{self.profile.display_name}: dfu_pid 未配置")
+            self._log(f"{self.profile.display_name}: " + t("dfu_pid not configured"))
             return False
         return self._wait_mode(self.profile.dfu_pid,
                                self.profile.timeouts.wait_dfu_device_s, "DFU")
@@ -389,7 +417,7 @@ class Pipeline:
     def _flash_app(self) -> bool:
         fw = self._firmware_override or self.profile.app_firmware
         if fw is None or self.profile.dfu_pid is None:
-            self._log("固件或 dfu_pid 未配置，无法烧写")
+            self._log(t("Firmware or dfu_pid not configured, cannot flash"))
             return False
         try:
             flasher.flash_app_firmware(
@@ -397,17 +425,17 @@ class Pipeline:
                 addr=self.profile.app_flash_addr, firmware=fw,
                 verify=self.profile.verify_after_flash,
                 log_cb=self._log, cancel=self.cancel)
-            self.report_lines.append(f"DFU 烧写: OK ({fw})")
+            self.report_lines.append(t("DFU flash") + f": OK ({fw})")
             return True
         except flasher.FlashError as e:
             self._log(str(e))
-            self.report_lines.append(f"DFU 烧写: FAIL ({e})")
+            self.report_lines.append(t("DFU flash") + f": FAIL ({e})")
             return False
 
     def _capture_all(self) -> bool:
         ok_all = True
-        for t in self.profile.capture_tests:
-            ok = self._capture_one(t.channels, t.samplerate_hz, t.samples,
+        for ct in self.profile.capture_tests:
+            ok = self._capture_one(ct.channels, ct.samplerate_hz, ct.samples,
                                    self.profile.voltage_threshold_v, None)
             ok_all = ok_all and ok
             if self.cancel.is_set():
@@ -420,17 +448,21 @@ class Pipeline:
         assert self.sigrok is not None
         label = f"{channels}ch@{format_rate(samplerate_hz)}"
         out_file = OUTPUT_DIR / f"{self.profile.id}_{channels}ch_{format_rate(samplerate_hz)}_wave.bin"
-        self._log(f"== 采样 {label} ({samples} samples) ==")
+        self._log(t("== Capture {label} ({samples} samples) ==").format(
+            label=label, samples=samples))
         # sigrok-cli refuses to capture when its scan matches several
         # devices, and this driver build does not implement the `conn`
         # selector yet ("Not supported now!") -- so detect the ambiguity
         # up front and tell the operator exactly what to do.
         found = self.sigrok.scan(self.profile.driver)
         if len(found) > 1:
-            msg = ("检测到多台 SLogic 设备同时在线，当前 sigrok 驱动暂不支持指定设备，"
-                   "请只保留被测设备后重试:\n  " + "\n  ".join(found))
+            msg = (t("Multiple SLogic devices detected online at once; the current "
+                     "sigrok driver does not yet support selecting a device, please "
+                     "keep only the device under test and retry:")
+                   + "\n  " + "\n  ".join(found))
             self._log(msg)
-            self.report_lines.append(f"{label}: FAIL (多设备歧义)")
+            self.report_lines.append(
+                f"{label}: FAIL (" + t("multiple-device ambiguity") + ")")
             return False
         try:
             result = self.sigrok.capture(
@@ -440,11 +472,14 @@ class Pipeline:
                 timeout_s=self.profile.timeouts.capture_s,
                 log_cb=self._log, cancel=self.cancel)
         except CaptureError as e:
-            self._log(f"采样失败: {e}")
-            self.report_lines.append(f"{label}: FAIL (采样失败: {e})")
+            self._log(t("Capture failed: {e}").format(e=e))
+            self.report_lines.append(
+                f"{label}: FAIL (" + t("Capture failed: {e}").format(e=e) + ")")
             return False
 
-        self._log(f"采样完成: {result.n_samples} samples, {result.elapsed_s:.2f}s -> {result.out_file.name}")
+        self._log(t("Capture done: {n} samples, {sec}s -> {file}").format(
+            n=result.n_samples, sec=f"{result.elapsed_s:.2f}",
+            file=result.out_file.name))
         chans = waveform.load_capture_file(result.out_file, channels, result.unitsize)
         e = self.profile.expected
         if expected_rows is None:
@@ -465,8 +500,10 @@ class Pipeline:
             f = f"{v.freq_hz / 1e6:.4f}MHz" if v.freq_hz else "N/A"
             d = f"{v.duty * 100:.2f}%" if v.duty is not None else "N/A"
             self._log(f"  CH{v.channel}: freq={f} duty={d} {'ok' if v.ok else '** FAIL **'}")
-        self.report_lines.append(f"{label}: {'PASS' if ok else 'FAIL'} "
-                                 f"({sum(v.ok for v in verdicts)}/{len(verdicts)} 通道通过)")
+        self.report_lines.append(
+            f"{label}: {'PASS' if ok else 'FAIL'} ("
+            + t("{n}/{total} channels passed").format(
+                n=sum(v.ok for v in verdicts), total=len(verdicts)) + ")")
         return ok
 
 

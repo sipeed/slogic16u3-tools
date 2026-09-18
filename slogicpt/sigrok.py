@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from .i18n import t
 from .profiles import RESOURCES_DIR, format_rate
 
 _PLATFORM_BINARIES = {
@@ -198,24 +199,28 @@ class SigrokCli:
             proc.wait()
         elapsed = time.time() - start
         if fate.killed_by == "cancel":
-            raise CaptureError("采样已取消")
+            raise CaptureError(t("Capture cancelled"))
         if fate.killed_by == "timeout":
-            raise CaptureError(f"采样超时 ({timeout_s:.0f}s)")
+            raise CaptureError(t("Capture timed out ({s:.0f}s)").format(s=timeout_s))
 
         if wrapped_rate is not None:
             raise CaptureError(
-                f"设备不支持采样率 {format_rate(samplerate_hz)}（驱动回卷到 {wrapped_rate}）。"
-                f"请修正产品档案 capture.samplerates")
+                t("Device does not support samplerate {rate} "
+                  "(driver wrapped to {wrapped}). "
+                  "Please fix the product profile capture.samplerates").format(
+                    rate=format_rate(samplerate_hz), wrapped=wrapped_rate))
         if proc.returncode != 0:
-            raise CaptureError(f"sigrok-cli 退出码 {proc.returncode}")
+            raise CaptureError(t("sigrok-cli exit code {code}").format(
+                code=proc.returncode))
         if not out_file.is_file() or out_file.stat().st_size == 0:
-            raise CaptureError(f"未产生采样数据文件: {out_file}")
+            raise CaptureError(t("No capture data file produced: {path}").format(
+                path=out_file))
 
         from .waveform import strip_frame_markers
         payload = strip_frame_markers(out_file.read_bytes())
         n_samples = len(payload) // unitsize
         if n_samples == 0:
-            raise CaptureError("采样数据不足一个样本")
+            raise CaptureError(t("Capture data is less than one full sample"))
         return CaptureResult(
             out_file=out_file, unitsize=unitsize,
             num_channels=channels, samplerate_hz=samplerate_hz,

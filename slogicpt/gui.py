@@ -5,16 +5,22 @@ Test-executive paradigm:
 - The LEFT side is a single linear TEST SEQUENCE list built from the
   product profile -- the same steps drive both modes: START runs them all
   in order (automated), and every row has its own run button (manual,
-  step-by-step).  Each row live-updates status (待执行/执行中/等待操作/
-  通过/失败) and duration.
-- The RIGHT side is a detail pane with three tabs: 运行日志 (live log),
-  测试参数 (custom capture parameters + expected table for engineering
-  debug), 结果报告 (structured session report with one-click copy so the
-  operator can paste it into an issue/feedback channel).
-- The BOTTOM is a full-width state banner: 待机 / 运行中 / 等待操作
+  step-by-step).  Each row live-updates status (pending/running/waiting/
+  pass/fail) and duration.
+- The RIGHT side stacks two always-visible panes (no tabs): the result
+  report on top and the live run log on bottom (like the old two-window
+  layout).  Custom capture parameters (for engineering debug) live behind
+  a ⚙ gear on the sampling step; the language selector sits in the header,
+  and resource-path overrides + one-time environment setup sit under the
+  left-panel auxiliary section.
+- The BOTTOM is a full-width state banner: standby / running / waiting
   (operator prompts) / PASS / FAIL + failure summary.
 
 All product specifics come from resources/products/*.toml.
+
+UI strings are bilingual (see slogicpt.i18n): English literals are the
+source keys, Chinese is looked up in slogicpt._translations. Wrap only
+constant literals in t(); interpolate outside via .format().
 """
 from __future__ import annotations
 
@@ -24,13 +30,13 @@ import time
 from collections import Counter
 from pathlib import Path
 
-from PyQt5.QtCore import QModelIndex, Qt, QTimer, pyqtSignal
+from PyQt5.QtCore import QModelIndex, QSettings, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import (
-    QAbstractItemView, QApplication, QComboBox, QFileDialog, QFrame,
+    QAbstractItemView, QApplication, QComboBox, QDialog, QFileDialog, QFrame,
     QGridLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
-    QMessageBox, QPushButton, QScrollArea, QTableWidget, QTableWidgetItem,
-    QTabWidget, QTextEdit, QVBoxLayout, QWidget,
+    QMessageBox, QPushButton, QScrollArea, QSplitter, QTableWidget,
+    QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget,
 )
 
 from . import device_watch
@@ -38,6 +44,7 @@ from . import env_setup
 from . import pipeline as pipeline_mod
 from . import programmer
 from .device_watch import Mode
+from .i18n import LANGS, get_language, set_language, t
 from .pipeline import StepStatus, sequence_plan
 from .profiles import (
     OUTPUT_DIR, ProductProfile, check_resources, format_rate,
@@ -47,13 +54,15 @@ from .sigrok import SigrokCli, find_sigrok_binary
 
 ACCENT = "#1565c0"
 
+# STATUS_STYLE stores the English text key; translate at the read site with
+# t(...) so a live language switch (UI rebuild) picks up the new language.
 STATUS_STYLE = {
-    StepStatus.PENDING: ("○", "#9e9e9e", "待执行"),
-    StepStatus.RUNNING: ("▶", "#1565c0", "执行中…"),
-    StepStatus.WAITING_USER: ("⏳", "#b26a00", "等待操作"),
-    StepStatus.PASSED: ("✔", "#2e7d32", "通过"),
-    StepStatus.FAILED: ("✘", "#c62828", "失败"),
-    StepStatus.SKIPPED: ("−", "#9e9e9e", "跳过"),
+    StepStatus.PENDING: ("○", "#9e9e9e", "Pending"),
+    StepStatus.RUNNING: ("▶", "#1565c0", "Running…"),
+    StepStatus.WAITING_USER: ("⏳", "#b26a00", "Waiting"),
+    StepStatus.PASSED: ("✔", "#2e7d32", "Pass"),
+    StepStatus.FAILED: ("✘", "#c62828", "Fail"),
+    StepStatus.SKIPPED: ("−", "#9e9e9e", "Skip"),
 }
 
 
@@ -79,7 +88,8 @@ class StepRow(QFrame):
     """One row of the test sequence: status glyph, number+name, duration,
     per-step run button (manual mode)."""
 
-    def __init__(self, index: int, step_id: str, label: str, on_run):
+    def __init__(self, index: int, step_id: str, label: str, on_run,
+                 on_settings=None):
         super().__init__()
         self.step_id = step_id
         self.label_text = label
@@ -99,11 +109,19 @@ class StepRow(QFrame):
         self.info.setStyleSheet("color:#777;")
         self.run_btn = QPushButton("▶")
         self.run_btn.setFixedSize(30, 26)
-        self.run_btn.setToolTip(f"单步执行：{label}")
+        self.run_btn.setToolTip(t("Single step: {label}").format(label=label))
         self.run_btn.clicked.connect(lambda: on_run(step_id))
         lay.addWidget(self.icon)
         lay.addWidget(self.name, 1)
         lay.addWidget(self.info)
+        # optional ⚙ gear (e.g. custom capture params on the sampling step)
+        # opens a popup; only shown when the row supplies a handler.
+        if on_settings is not None:
+            self.settings_btn = QPushButton("⚙")
+            self.settings_btn.setFixedSize(30, 26)
+            self.settings_btn.setToolTip(t("Test Params"))
+            self.settings_btn.clicked.connect(lambda: on_settings(step_id))
+            lay.addWidget(self.settings_btn)
         lay.addWidget(self.run_btn)
         self.setLayout(lay)
         self.set_status(StepStatus.PENDING)
@@ -129,7 +147,7 @@ class StepRow(QFrame):
               "running": "#e8f0fb", "waiting_user": "#fff8e1"}.get(status.value, "")
         self.setStyleSheet(f"QFrame {{ background:{bg or 'transparent'};"
                            f" border:1px solid #d0d0d0; border-radius:4px; }}")
-        self.setToolTip(text)
+        self.setToolTip(t(text))
 
 
 class ProductionTestGUI(QWidget):
@@ -160,10 +178,14 @@ class ProductionTestGUI(QWidget):
         self.efuse_status = "unknown"       # unknown | unlocked | locked
         self.probe_cable: int | None = None
         self._rescan_after = False          # auto re-probe after a lock succeeds
-        self._switch_popup: QMessageBox | None = None  # 人工切换弹窗（非模态）
+        self._switch_popup: QMessageBox | None = None  # manual-switch popup (non-modal)
 
         self.init_ui()
-        self.log_signal.connect(self.log_box.append)
+        # Signals connect ONCE here to stable forwarding slots; a language
+        # switch rebuilds the central widget (new log_box/report_box objects),
+        # so the slots must dereference self.<widget> at call time, never bind
+        # to a specific widget instance.
+        self.log_signal.connect(self._append_log)
         self.step_signal.connect(self._on_step)
         self.prompt_signal.connect(self._on_prompt)
         self.prompt_clear_signal.connect(self._on_prompt_clear)
@@ -175,8 +197,9 @@ class ProductionTestGUI(QWidget):
 
         if not self.profiles:
             QMessageBox.critical(
-                self, "无产品档案",
-                "resources/products/ 下没有可用的产品档案，请参照 resources/README.md 放置。")
+                self, t("No product profiles"),
+                t("No usable product profiles under resources/products/; "
+                  "see resources/README.md to add them."))
         self.device_timer = QTimer(self)
         self.device_timer.timeout.connect(self.refresh_device_status)
         self.device_timer.start(1500)
@@ -185,7 +208,18 @@ class ProductionTestGUI(QWidget):
     # ------------------------------------------------------------------ UI
 
     def init_ui(self):
+        # A single outer layout holds one swappable central widget so the whole
+        # UI can be torn down and rebuilt in the new language (see _rebuild_ui).
         self.setWindowTitle("SLogic Production Test")
+        self._outer = QVBoxLayout()
+        self._outer.setContentsMargins(0, 0, 0, 0)
+        self.setLayout(self._outer)
+        self._central = self._build_central()
+        self._outer.addWidget(self._central)
+        self._on_product_changed(self.product_combo.currentIndex())
+
+    def _build_central(self) -> QWidget:
+        central = QWidget()
         root = QVBoxLayout()
         root.setSpacing(5)
         root.setContentsMargins(8, 6, 8, 6)
@@ -196,18 +230,55 @@ class ProductionTestGUI(QWidget):
         body.addWidget(self._build_detail_panel(), 3)
         root.addLayout(body, 1)
         root.addWidget(self._build_banner())
-        self.setLayout(root)
-        self._on_product_changed(self.product_combo.currentIndex())
+        central.setLayout(root)
+        self._build_param_dialog()   # off-screen popup; ⚙ on the sampling step
+        return central
+
+    def _rebuild_ui(self):
+        """Tear down and rebuild the central widget in the current language,
+        preserving operator-visible state (product, overrides, log, report)."""
+        prod_idx = self.product_combo.currentIndex()
+        fw = self.fw_file_edit.text()
+        dfu = self.dfu_file_edit.text()
+        ekey = self.ekey_file_edit.text()
+        log_text = self.log_box.toPlainText()
+        report_text = self.report_box.toPlainText()
+
+        self._outer.removeWidget(self._central)
+        self._central.deleteLater()
+        if getattr(self, "_param_dialog", None) is not None:
+            self._param_dialog.deleteLater()   # top-level popup, not in _central
+        self._central = self._build_central()
+        self._outer.addWidget(self._central)
+
+        # restore state (block signals so restoring the product index doesn't
+        # fire _on_product_changed before we invoke it explicitly below)
+        self.product_combo.blockSignals(True)
+        self.product_combo.setCurrentIndex(prod_idx)
+        self.product_combo.blockSignals(False)
+        self.fw_file_edit.setText(fw)
+        self.dfu_file_edit.setText(dfu)
+        self.ekey_file_edit.setText(ekey)
+        if log_text:
+            self.log_box.setPlainText(log_text)
+        if report_text:
+            self.report_box.setPlainText(report_text)
+        self._on_product_changed(prod_idx)
+        self.refresh_device_status()
+        self._refresh_env_buttons()
+        self._render_problem_chip()
+        self._update_enablement()
 
     def _build_header(self) -> QHBoxLayout:
         h = QHBoxLayout()
         h.setSpacing(8)
         self.scan_btn = QPushButton("🔄")
-        self.scan_btn.setToolTip("扫描外置烧录器(JTAG)并读 eFuse 锁定状态")
+        self.scan_btn.setToolTip(
+            t("Scan the external programmer (JTAG) and read the eFuse lock state"))
         self.scan_btn.setFixedWidth(36)
         self.scan_btn.clicked.connect(self.run_probe)
         h.addWidget(self.scan_btn)
-        h.addWidget(QLabel("产品:"))
+        h.addWidget(QLabel(t("Product:")))
         self.product_combo = QComboBox()
         for p in self.profiles:
             self.product_combo.addItem(p.display_name, p.id)
@@ -219,13 +290,26 @@ class ProductionTestGUI(QWidget):
         self.device_status_label.setFont(f)
         h.addWidget(self.device_status_label, 1)
 
+        # language selector (moved here from the old config tab); switching
+        # rebuilds the whole UI when idle -- see _on_language_changed.  Set the
+        # current index BEFORE connecting so restoring it doesn't fire the slot.
+        self.lang_combo = QComboBox()
+        for code, name in LANGS:
+            self.lang_combo.addItem(name, code)
+        cur = self.lang_combo.findData(get_language())
+        if cur >= 0:
+            self.lang_combo.setCurrentIndex(cur)
+        self.lang_combo.currentIndexChanged.connect(self._on_language_changed)
+        h.addWidget(QLabel("🌐"))
+        h.addWidget(self.lang_combo)
+
         self.warn_chip = QPushButton()
         self.warn_chip.setFlat(True)
         self.warn_chip.clicked.connect(self._show_problems_dialog)
         h.addWidget(self.warn_chip)
         self._render_problem_chip()
 
-        self.start_btn = QPushButton("▶ 一键全流程")
+        self.start_btn = QPushButton("▶ " + t("Run Full Test"))
         f2 = QFont(); f2.setPointSize(f2.pointSize() + 1); f2.setBold(True)
         self.start_btn.setFont(f2)
         self.start_btn.setStyleSheet(
@@ -234,7 +318,7 @@ class ProductionTestGUI(QWidget):
         self.start_btn.clicked.connect(self.run_full_test)
         h.addWidget(self.start_btn)
 
-        self.stop_btn = QPushButton("■ 停止")
+        self.stop_btn = QPushButton("■ " + t("Stop"))
         self.stop_btn.setStyleSheet(
             "QPushButton { background:#c62828; color:white; padding:5px 12px;"
             " border-radius:4px; } QPushButton:disabled { background:#b8b8b8; }")
@@ -244,7 +328,7 @@ class ProductionTestGUI(QWidget):
         return h
 
     def _build_sequence_panel(self) -> QWidget:
-        panel = QGroupBox("测试序列（自动按序执行，或点 ▶ 单步）")
+        panel = QGroupBox(t("Test Sequence (auto in order, or ▶ per step)"))
         panel.setStyleSheet(
             f"QGroupBox {{ border:1px solid #bbb; border-radius:4px; margin-top:10px;"
             f" font-weight:bold; }} QGroupBox::title {{ subcontrol-origin:margin;"
@@ -261,56 +345,142 @@ class ProductionTestGUI(QWidget):
         scroll.setWidget(holder)
         outer.addWidget(scroll, 1)
 
-        aux_head = QLabel("辅助操作（不计入序列结果）")
+        aux_head = QLabel(t("Auxiliary (not counted in sequence result)"))
         aux_head.setStyleSheet("color:#666; font-weight:bold; margin-top:4px;")
         outer.addWidget(aux_head)
         self.aux_layout = QHBoxLayout()
         self.aux_layout.setSpacing(4)
         outer.addLayout(self.aux_layout)
+
+        # resource-path overrides + one-time environment setup live under the
+        # auxiliary section (moved out of the old config tab).
+        outer.addWidget(self._build_resource_group())
+        env_box = self._build_env_group()
+        if env_box is not None:
+            outer.addWidget(env_box)
+
         panel.setLayout(outer)
         return panel
 
     def _build_detail_panel(self) -> QWidget:
-        self.tabs = QTabWidget()
+        """Right side: two always-visible panes (no tabs) -- result report on
+        top, live run log on bottom, like the old two-window layout."""
+        split = QSplitter(Qt.Vertical)
 
-        # tab 1: live log
+        # top: session report
+        report_page = QWidget(); rv = QVBoxLayout(); rv.setContentsMargins(4, 4, 4, 4)
+        rhead = QHBoxLayout()
+        rhead.addWidget(QLabel(t("Session report (paste directly into feedback):")))
+        rhead.addStretch(1)
+        self.copy_report_btn = QPushButton("📋 " + t("Copy Report"))
+        self.copy_report_btn.clicked.connect(self.copy_report)
+        rhead.addWidget(self.copy_report_btn)
+        rv.addLayout(rhead)
+        self.report_box = QTextEdit(); self.report_box.setReadOnly(True)
+        rv.addWidget(self.report_box, 1)
+        report_page.setLayout(rv)
+        split.addWidget(report_page)
+
+        # bottom: live log
         log_page = QWidget(); v = QVBoxLayout(); v.setContentsMargins(4, 4, 4, 4)
         head = QHBoxLayout()
+        head.addWidget(QLabel(t("Run Log")))   # top-left title, mirrors the report pane
         self.step_label = QLabel(""); self.step_label.setStyleSheet("color:#555;")
         head.addWidget(self.step_label); head.addStretch(1)
-        clear = QPushButton("清空"); clear.clicked.connect(lambda: self.log_box.clear())
+        clear = QPushButton(t("Clear")); clear.clicked.connect(lambda: self.log_box.clear())
         head.addWidget(clear)
         v.addLayout(head)
         self.log_box = QTextEdit(); self.log_box.setReadOnly(True)
         v.addWidget(self.log_box, 1)
         log_page.setLayout(v)
-        self.tabs.addTab(log_page, "运行日志")
+        split.addWidget(log_page)
 
-        # tab 2: engineering parameters / custom capture
-        param_page = QWidget(); pv = QVBoxLayout(); pv.setContentsMargins(4, 4, 4, 4)
+        split.setStretchFactor(0, 2)   # report
+        split.setStretchFactor(1, 3)   # log gets a bit more room
+        return split
+
+    def _build_resource_group(self) -> QGroupBox:
+        """资源路径覆盖：显示产品档案解析出的路径（placeholder），可临时改用别的
+        文件（仅本次会话生效，不写回 TOML）。三项：app 固件 / DFU 镜像 / eFuse 密钥。"""
+        res_box = QGroupBox(
+            t("Resource Path Overrides (blank = use profile; this session only)"))
+        res_grid = QGridLayout()
+        res_grid.setContentsMargins(6, 4, 6, 4)
+        res_grid.setVerticalSpacing(3)
+        self.fw_file_edit = self._add_resource_row(
+            res_grid, 0, t("app firmware:"), self.select_fw_file)
+        self.dfu_file_edit = self._add_resource_row(
+            res_grid, 1, t("DFU image:"), self.select_dfu_file)
+        self.ekey_file_edit = self._add_resource_row(
+            res_grid, 2, t("eFuse key:"), self.select_ekey_file)
+        res_grid.setColumnStretch(1, 1)
+        res_box.setLayout(res_grid)
+        return res_box
+
+    def _build_env_group(self) -> QGroupBox | None:
+        """环境准备（一次性）：本平台的先决条件一键部署/移除——Linux=udev 设备权限；
+        Windows=FTDI A 通道 WinUSB 驱动。其它平台返回 None（不显示该组）。"""
+        if not env_setup.requirement():
+            return None
+        env_box = QGroupBox(
+            t("Environment Setup (one-time) · {name}").format(name=env_setup.title()))
+        eg = QGridLayout(); eg.setContentsMargins(6, 4, 6, 4)
+        self.env_hint = QLabel(env_setup.hint())
+        self.env_hint.setWordWrap(True)
+        self.env_hint.setStyleSheet("color:#555;")
+        eg.addWidget(self.env_hint, 0, 0, 1, 2)
+        self.env_deploy_btn = QPushButton(t("Deploy"))
+        self.env_deploy_btn.setStyleSheet(
+            "QPushButton { background:#2e7d32; color:white; font-weight:bold;"
+            " padding:4px 14px; border-radius:4px; }"
+            " QPushButton:disabled { background:#b8b8b8; }")
+        self.env_deploy_btn.clicked.connect(lambda: self._run_env_setup("deploy"))
+        self.env_remove_btn = QPushButton(t("Remove"))
+        self.env_remove_btn.setStyleSheet(
+            "QPushButton { padding:4px 14px; border-radius:4px; }"
+            " QPushButton:disabled { color:#999; }")
+        self.env_remove_btn.clicked.connect(lambda: self._run_env_setup("remove"))
+        eg.addWidget(self.env_deploy_btn, 1, 0)
+        eg.addWidget(self.env_remove_btn, 1, 1)
+        eg.setColumnStretch(0, 1)
+        eg.setColumnStretch(1, 1)
+        env_box.setLayout(eg)
+        return env_box
+
+    def _build_param_dialog(self) -> None:
+        """Build the (hidden) custom-capture parameters popup opened by the ⚙
+        gear on the sampling step.  Built as part of _build_central so its
+        widgets exist for _on_product_changed and are rebuilt (retranslated)
+        on a language switch."""
+        dlg = QDialog(self)
+        dlg.setWindowTitle(t("Test Params"))
+        dlg.setModal(False)
+        pv = QVBoxLayout(); pv.setContentsMargins(8, 8, 8, 8)
         cap = QGridLayout(); cap.setSpacing(4)
-        cap.addWidget(QLabel("通道数:"), 0, 0)
+        cap.addWidget(QLabel(t("Channels:")), 0, 0)
         self.channel_combo = QComboBox()
         self.channel_combo.currentTextChanged.connect(self._on_channels_changed)
         cap.addWidget(self.channel_combo, 0, 1)
-        cap.addWidget(QLabel("采样率:"), 0, 2)
+        cap.addWidget(QLabel(t("Sample Rate:")), 0, 2)
         self.rate_combo = QComboBox()
         cap.addWidget(self.rate_combo, 0, 3)
-        cap.addWidget(QLabel("采样点数:"), 1, 0)
+        cap.addWidget(QLabel(t("Samples:")), 1, 0)
         self.samples_edit = QLineEdit("1M")
         cap.addWidget(self.samples_edit, 1, 1)
-        cap.addWidget(QLabel("电压阈值(V):"), 1, 2)
+        cap.addWidget(QLabel(t("Voltage Threshold (V):")), 1, 2)
         self.volt_edit = QLineEdit("1.6")
         cap.addWidget(self.volt_edit, 1, 3)
         pv.addLayout(cap)
-        self.sampling_btn = QPushButton("▶ 自定义采样验证（工程调试）")
+        self.sampling_btn = QPushButton("▶ " + t("Custom Capture Verify (engineering)"))
         self.sampling_btn.setStyleSheet(
             "QPushButton { background:#2e7d32; color:white; font-weight:bold;"
             " padding:4px; border-radius:4px; }"
             " QPushButton:disabled { background:#b8b8b8; }")
         self.sampling_btn.clicked.connect(self.run_sampling)
         pv.addWidget(self.sampling_btn)
-        pv.addWidget(QLabel("每通道期望值（双击修改；序列步骤使用产品档案值）:"))
+        pv.addWidget(QLabel(
+            t("Per-channel expected values (double-click to edit; "
+              "sequence steps use profile values):")))
         self.expected_table = ExpectedTable()
         self.expected_table.setColumnCount(2)
         self.expected_table.setHorizontalHeaderLabels(["Freq (Hz)", "Duty (%)"])
@@ -318,86 +488,23 @@ class ProductionTestGUI(QWidget):
         self.expected_table.verticalHeader().setDefaultSectionSize(24)
         self.expected_table.verticalHeader().setFixedWidth(34)
         pv.addWidget(self.expected_table, 1)
-        param_page.setLayout(pv)
-        self.tabs.addTab(param_page, "测试参数")
+        dlg.setLayout(pv)
+        dlg.resize(460, 420)
+        self._param_dialog = dlg
 
-        # tab 3: configuration -- resource-path overrides + one-time env prep
-        self.tabs.addTab(self._build_config_page(), "配置")
-
-        # tab 3: session report
-        report_page = QWidget(); rv = QVBoxLayout(); rv.setContentsMargins(4, 4, 4, 4)
-        rhead = QHBoxLayout()
-        rhead.addWidget(QLabel("本次会话报告（可直接粘贴反馈）:"))
-        rhead.addStretch(1)
-        self.copy_report_btn = QPushButton("📋 复制报告")
-        self.copy_report_btn.clicked.connect(self.copy_report)
-        rhead.addWidget(self.copy_report_btn)
-        rv.addLayout(rhead)
-        self.report_box = QTextEdit(); self.report_box.setReadOnly(True)
-        rv.addWidget(self.report_box, 1)
-        report_page.setLayout(rv)
-        self.tabs.addTab(report_page, "结果报告")
-        return self.tabs
-
-    def _build_config_page(self) -> QWidget:
-        """配置页：资源路径覆盖 + 一次性环境准备（从测试参数页分出，避免堆叠）。"""
-        page = QWidget()
-        cv = QVBoxLayout(); cv.setContentsMargins(4, 4, 4, 4); cv.setSpacing(8)
-
-        # 资源路径覆盖：显示产品档案解析出的路径（placeholder），可临时改用别的文件
-        # （仅本次会话生效，不写回 TOML）。三项：app 固件 / DFU 镜像 / eFuse 密钥。
-        res_box = QGroupBox("资源路径覆盖（留空＝用产品档案；仅本次会话生效）")
-        res_grid = QGridLayout()
-        res_grid.setContentsMargins(6, 4, 6, 4)
-        res_grid.setVerticalSpacing(3)
-        self.fw_file_edit = self._add_resource_row(
-            res_grid, 0, "app 固件:", self.select_fw_file)
-        self.dfu_file_edit = self._add_resource_row(
-            res_grid, 1, "DFU 镜像:", self.select_dfu_file)
-        self.ekey_file_edit = self._add_resource_row(
-            res_grid, 2, "eFuse 密钥:", self.select_ekey_file)
-        res_grid.setColumnStretch(1, 1)
-        res_box.setLayout(res_grid)
-        cv.addWidget(res_box)
-
-        # 环境准备（一次性）：本平台的先决条件一键部署/移除——
-        # Linux=udev 设备权限；Windows=FTDI A 通道 WinUSB 驱动。其它平台隐藏。
-        if env_setup.requirement():
-            env_box = QGroupBox(f"环境准备（一次性）· {env_setup.title()}")
-            eg = QGridLayout(); eg.setContentsMargins(6, 4, 6, 4)
-            self.env_hint = QLabel(env_setup.hint())
-            self.env_hint.setWordWrap(True)
-            self.env_hint.setStyleSheet("color:#555;")
-            eg.addWidget(self.env_hint, 0, 0, 1, 2)
-            self.env_deploy_btn = QPushButton("部署")
-            self.env_deploy_btn.setStyleSheet(
-                "QPushButton { background:#2e7d32; color:white; font-weight:bold;"
-                " padding:4px 14px; border-radius:4px; }"
-                " QPushButton:disabled { background:#b8b8b8; }")
-            self.env_deploy_btn.clicked.connect(lambda: self._run_env_setup("deploy"))
-            self.env_remove_btn = QPushButton("移除")
-            self.env_remove_btn.setStyleSheet(
-                "QPushButton { padding:4px 14px; border-radius:4px; }"
-                " QPushButton:disabled { color:#999; }")
-            self.env_remove_btn.clicked.connect(lambda: self._run_env_setup("remove"))
-            eg.addWidget(self.env_deploy_btn, 1, 0)
-            eg.addWidget(self.env_remove_btn, 1, 1)
-            eg.setColumnStretch(0, 1)
-            eg.setColumnStretch(1, 1)
-            env_box.setLayout(eg)
-            cv.addWidget(env_box)
-
-        cv.addStretch(1)
-        page.setLayout(cv)
-        return page
+    def _open_params(self, _sid: str | None = None) -> None:
+        """Show the custom-capture params popup (⚙ on the sampling step)."""
+        self._param_dialog.show()
+        self._param_dialog.raise_()
+        self._param_dialog.activateWindow()
 
     def _build_banner(self) -> QLabel:
-        self.banner = QLabel("待机")
+        self.banner = QLabel(t("Standby"))
         bf = QFont(); bf.setPointSize(20); bf.setBold(True)
         self.banner.setFont(bf)
         self.banner.setAlignment(Qt.AlignCenter)
         self.banner.setFixedHeight(52)
-        self._set_banner("idle", "待机 — 选择产品并连接设备")
+        self._set_banner("idle", t("Standby — select a product and connect the device"))
         return self.banner
 
     def _set_banner(self, kind: str, text: str):
@@ -421,22 +528,24 @@ class ProductionTestGUI(QWidget):
         if not self.problems:
             self.warn_chip.hide()
             return
-        parts = ([f"⛔ {errors} 错误"] if errors else []) + \
-                ([f"⚠ {warnings} 警告"] if warnings else [])
+        parts = (["⛔ " + t("{n} errors").format(n=errors)] if errors else []) + \
+                (["⚠ " + t("{n} warnings").format(n=warnings)] if warnings else [])
         self.warn_chip.setText(" / ".join(parts))
         color = "#c62828" if errors else "#b26a00"
         self.warn_chip.setStyleSheet(
             f"QPushButton {{ color: {color}; font-weight: bold;"
             f" border: 1px solid {color}; border-radius: 10px; padding: 2px 10px; }}")
-        self.warn_chip.setToolTip("点击查看资源自检详情")
+        self.warn_chip.setToolTip(t("Click for resource self-check details"))
         self.warn_chip.show()
 
     def _show_problems_dialog(self):
         box = QMessageBox(self)
-        box.setWindowTitle("资源自检")
+        box.setWindowTitle(t("Resource Self-check"))
         box.setIcon(QMessageBox.Warning if self.problems else QMessageBox.Information)
-        box.setText("启动自检发现以下问题（缺失项对应功能已禁用，补齐资源后重启生效）：")
-        box.setDetailedText("\n\n".join(str(p) for p in self.problems) or "无问题")
+        box.setText(t("Startup self-check found the following issues (missing items "
+                      "disable the related function; add resources and restart to "
+                      "take effect):"))
+        box.setDetailedText("\n\n".join(str(p) for p in self.problems) or t("No issues"))
         box.exec_()
 
     # ------------------------------------------------------- profile plumbing
@@ -472,9 +581,10 @@ class ProductionTestGUI(QWidget):
         dfu_img = prog.flash.image if (prog and prog.flash) else None
         ekey = prog.efuse_key_file if prog else None
         for edit, path, empty_hint in (
-                (self.fw_file_edit, p.app_firmware, "档案未配置固件，请手动选择"),
-                (self.dfu_file_edit, dfu_img, "档案未配置 DFU 镜像"),
-                (self.ekey_file_edit, ekey, "档案未配置 eFuse 密钥")):
+                (self.fw_file_edit, p.app_firmware,
+                 t("Profile has no firmware; please select manually")),
+                (self.dfu_file_edit, dfu_img, t("Profile has no DFU image")),
+                (self.ekey_file_edit, ekey, t("Profile has no eFuse key"))):
             edit.setText("")
             edit.setPlaceholderText(str(path) if path else empty_hint)
         self._on_channels_changed(self.channel_combo.currentText())
@@ -492,9 +602,12 @@ class ProductionTestGUI(QWidget):
         self.step_rows.clear()
         plan = sequence_plan(p)
         if not plan:
-            self.seq_container.addWidget(QLabel("档案未定义任何步骤"))
+            self.seq_container.addWidget(QLabel(t("Profile defines no steps")))
         for i, (sid, label) in enumerate(plan, start=1):
-            row = StepRow(i, sid, label, self.run_single_step)
+            # the sampling/capture step carries a ⚙ gear that opens the custom
+            # capture-params popup (the old "Test Params" tab).
+            on_settings = self._open_params if sid.startswith("capture") else None
+            row = StepRow(i, sid, label, self.run_single_step, on_settings)
             self.seq_container.addWidget(row)
             self.step_rows[sid] = row
         self.seq_container.addStretch(1)
@@ -511,19 +624,22 @@ class ProductionTestGUI(QWidget):
         self.programmer_aux_buttons: list[QPushButton] = []
         # DFU<->APP 手动切换：文案与方向按当前设备模式在 _update_switch_btn 中更新；
         # 启用状态另行管理（需检测到设备才可用）。
-        self.switch_btn = QPushButton("🔀 DFU ↔ APP 切换")
+        self.switch_btn = QPushButton("🔀 DFU ↔ APP " + t("Switch"))
         self.switch_btn.clicked.connect(self.run_switch_mode)
         self.aux_layout.addWidget(self.switch_btn)
-        self.reflash_btn = QPushButton("♻ 复烧（返修）")
-        self.reflash_btn.setToolTip("等待设备进入 DFU 模式（超时提示人工操作）→ 重写应用固件 → 等待应用模式")
+        self.reflash_btn = QPushButton("♻ " + t("Reflash (repair)"))
+        self.reflash_btn.setToolTip(
+            t("Wait for DFU mode (prompt manual action on timeout) → "
+              "rewrite app firmware → wait for app mode"))
         self.reflash_btn.clicked.connect(self.run_reflash)
         self.aux_layout.addWidget(self.reflash_btn)
         self.aux_layout.addStretch(1)
 
     def _efuse_badge(self) -> str:
-        """eFuse 锁定状态徽标（显示在设备状态前）：⚪未知/🔓未锁/🔒已锁。"""
-        return {"locked": "🔒eFuse已锁", "unlocked": "🔓eFuse未锁"}.get(
-            self.efuse_status, "⚪eFuse未知")
+        """eFuse lock badge (shown before the device status): unknown/unlocked/locked."""
+        return {"locked": "🔒" + t("eFuse locked"),
+                "unlocked": "🔓" + t("eFuse unlocked")}.get(
+            self.efuse_status, "⚪" + t("eFuse unknown"))
 
     def _on_channels_changed(self, text: str):
         p = self.profile
@@ -553,8 +669,9 @@ class ProductionTestGUI(QWidget):
             # 无 libusb 后端时所有 usb.core.find 静默失败 -> 看不到任何设备；
             # 显式告警而非静默（典型：Windows 未装 libusb-1.0.dll）
             self.device_status_label.setText(
-                "⚠ 未找到 libusb 后端（libusb-1.0.dll）：无法枚举 USB 设备，"
-                "DFU/APP 检测失效——见 resources/README.md")
+                "⚠ " + t("libusb backend not found (libusb-1.0.dll): cannot enumerate "
+                         "USB devices, DFU/APP detection disabled — see "
+                         "resources/README.md"))
             self.device_status_label.setStyleSheet("color:#c62828;")
             self.detected = []
             self._update_enablement()
@@ -565,8 +682,9 @@ class ProductionTestGUI(QWidget):
         if conflict is not None:
             # 产品与在线设备不符：只提示切换到正确产品，其它操作在 _update_enablement 中禁用
             self.device_status_label.setText(
-                f"⚠ 在线 {conflict}，与所选 {p.display_name} 不符："
-                "请切换到正确产品，或改插对应设备")
+                "⚠ " + t("Online {conflict} differs from selected {name}: switch to "
+                         "the correct product, or plug in the matching device").format(
+                             conflict=conflict, name=p.display_name))
             self.device_status_label.setStyleSheet("color:#c62828;")
             self._update_enablement()
             return
@@ -586,15 +704,17 @@ class ProductionTestGUI(QWidget):
                 continue
             seen.add(key)
             others.append("SLogic DFU" if key in shared_dfu else str(d))
-        others_txt = f"　(另在线: {', '.join(others)})" if others else ""
+        others_txt = ("　(" + t("also online: {items}").format(items=", ".join(others)) + ")"
+                      if others else "")
         badge = self._efuse_badge()   # eFuse 状态（来自 🔄 扫描）前置显示
         if mine is not None:
-            self.device_status_label.setText(f"{badge} | 设备: {mine}{others_txt}")
+            self.device_status_label.setText(
+                f"{badge} | " + t("Device: {dev}").format(dev=mine) + others_txt)
             self.device_status_label.setStyleSheet("color: #2e7d32;")
         else:
             name = p.display_name if p else "SLogic"
             self.device_status_label.setText(
-                f"{badge} | 未检测到 {name} 设备{others_txt}")
+                f"{badge} | " + t("No {name} device detected").format(name=name) + others_txt)
             self.device_status_label.setStyleSheet("color: #c62828;")
         self._update_enablement()
 
@@ -628,8 +748,9 @@ class ProductionTestGUI(QWidget):
             # 产品与在线设备不符：禁用一切操作，只允许（顶栏）切换到正确产品
             self.start_btn.setEnabled(False)
             self.start_btn.setToolTip(
-                f"在线设备为 {conflict.profile.display_name}（APP），与所选 "
-                f"{p.display_name} 不符——请切换到正确产品或改插设备")
+                t("Online device is {online} (APP), differs from selected {sel} — "
+                  "switch to the correct product or replug").format(
+                      online=conflict.profile.display_name, sel=p.display_name))
             self.sampling_btn.setEnabled(False)
             for row in self.step_rows.values():
                 row.run_btn.setEnabled(False)
@@ -655,22 +776,27 @@ class ProductionTestGUI(QWidget):
             missing = []
             if self.sigrok is None: missing.append("sigrok-cli")
             if p.dfu_pid is None: missing.append("dfu_pid")
-            if not fw_ok: missing.append("app 固件")
-            if has_blank and not prog_ok: missing.append("外置烧录器（点 🔄 扫描）")
-            self.start_btn.setToolTip("缺少: " + ", ".join(missing))
+            if not fw_ok: missing.append(t("app firmware"))
+            if has_blank and not prog_ok:
+                missing.append(t("external programmer (click 🔄 scan)"))
+            self.start_btn.setToolTip(t("Missing: {items}").format(items=", ".join(missing)))
         else:
             self.start_btn.setToolTip("")
         for sid, row in self.step_rows.items():
             tip = ""
             if sid.startswith("blank:"):
                 ok = prog_ok
-                if not ok: tip = "需要连接外置烧录器：点顶栏 🔄 扫描"
+                if not ok:
+                    tip = t("Connect the external programmer: click 🔄 scan in the top bar")
             elif sid == "flash_app":
                 ok = p.dfu_pid is not None and fw_ok and dfu_present
-                if not dfu_present: tip = "需设备处于 DFU 模式（先完成上一步烧空板）"
+                if not dfu_present:
+                    tip = t("Device must be in DFU mode (complete the previous "
+                            "blank-flash step first)")
             elif sid == "switch_app":
                 ok = p.dfu_pid is not None and dfu_present
-                if not dfu_present: tip = "需设备处于 DFU 模式"
+                if not dfu_present:
+                    tip = t("Device must be in DFU mode")
             elif sid == "wait_dfu":
                 ok = p.dfu_pid is not None
             elif sid == "wait_app":
@@ -678,13 +804,14 @@ class ProductionTestGUI(QWidget):
             elif sid.startswith("capture"):
                 ok = self.sigrok is not None and app_present
                 if self.sigrok is not None and not app_present:
-                    tip = "需设备处于 APP 模式（先完成烧 APP 并等待 APP）"
+                    tip = t("Device must be in APP mode (finish flashing APP and "
+                            "waiting for APP first)")
             else:
                 ok = True
             row.run_btn.setEnabled(not busy and ok)
             row.run_btn.setToolTip(tip if not ok else "")
-        prog_tip = ("产线终检操作，谨慎执行" if prog_ok
-                    else "需要连接外置烧录器：点顶栏 🔄 扫描")
+        prog_tip = (t("Production final-check operation; proceed with caution") if prog_ok
+                    else t("Connect the external programmer: click 🔄 scan in the top bar"))
         for btn in getattr(self, "programmer_aux_buttons", []):
             btn.setEnabled(not busy and prog_ok)
             btn.setToolTip(prog_tip)
@@ -700,22 +827,24 @@ class ProductionTestGUI(QWidget):
         if not hasattr(self, "switch_btn"):
             return
         if p is None or p.dfu_pid is None:
-            self.switch_btn.setText("🔀 DFU ↔ APP 切换")
-            self.switch_btn.setToolTip("该产品未配置 DFU（dfu_pid），无法切换")
+            self.switch_btn.setText("🔀 DFU ↔ APP " + t("Switch"))
+            self.switch_btn.setToolTip(t("This product has no DFU (dfu_pid); cannot switch"))
             self.switch_btn.setEnabled(False)
             return
         mode = self._detected_mode(p)
         if mode == Mode.DFU:
             self.switch_btn.setText("🔀 DFU → APP")
-            self.switch_btn.setToolTip("当前为 DFU（烧录）模式，切换到 APP（应用）模式")
+            self.switch_btn.setToolTip(
+                t("Currently DFU (flashing) mode; switch to APP (application) mode"))
             self.switch_btn.setEnabled(allow)
         elif mode == Mode.APP:
             self.switch_btn.setText("🔀 APP → DFU")
-            self.switch_btn.setToolTip("当前为 APP（应用）模式，切换到 DFU（烧录）模式")
+            self.switch_btn.setToolTip(
+                t("Currently APP (application) mode; switch to DFU (flashing) mode"))
             self.switch_btn.setEnabled(allow)
         else:
-            self.switch_btn.setText("🔀 DFU ↔ APP 切换")
-            self.switch_btn.setToolTip("未检测到设备，无法切换")
+            self.switch_btn.setText("🔀 DFU ↔ APP " + t("Switch"))
+            self.switch_btn.setToolTip(t("No device detected; cannot switch"))
             self.switch_btn.setEnabled(False)
 
     # -------------------------------------------------------------- actions
@@ -743,8 +872,7 @@ class ProductionTestGUI(QWidget):
             for step in pl.steps:
                 if step.id in self.step_rows:
                     self.step_rows[step.id].reset()
-        self._set_banner("running", "运行中…")
-        self.tabs.setCurrentIndex(0)
+        self._set_banner("running", t("Running…"))
         pl.start()
         self._update_enablement()
 
@@ -764,7 +892,8 @@ class ProductionTestGUI(QWidget):
         p = self.profile
         if p is None or self.sigrok is None:
             return
-        self.log_signal.emit(f"===== 一键全流程: {p.display_name} =====")
+        self.log_signal.emit(
+            "===== " + t("Run Full Test: {name}").format(name=p.display_name) + " =====")
         self._start(pipeline_mod.Pipeline.full_test(
             p, self.sigrok, self._callbacks(), self._override_firmware(),
             cable_index=self.probe_cable, image_override=self._override_dfu(),
@@ -776,7 +905,9 @@ class ProductionTestGUI(QWidget):
         if p is None:
             return
         row = self.step_rows.get(step_id)
-        self.log_signal.emit(f"===== 单步执行: {row.label_text if row else step_id} =====")
+        self.log_signal.emit(
+            "===== " + t("Single step: {label}").format(
+                label=row.label_text if row else step_id) + " =====")
         self._start(pipeline_mod.Pipeline.single_step(
             p, self.sigrok, self._callbacks(), step_id, self._override_firmware(),
             cable_index=self.probe_cable, image_override=self._override_dfu(),
@@ -790,19 +921,23 @@ class ProductionTestGUI(QWidget):
         if p is None:
             return
         if p.programmer is None:
-            self.log_signal.emit("本产品未配置 programmer.toml，无外置烧录器能力。")
+            self.log_signal.emit(
+                t("This product has no programmer.toml; no external programmer capability."))
             return
         self.scan_btn.setEnabled(False)
         self.scan_btn.setText("⏳")
-        self.log_signal.emit(f"===== 扫描外置烧录器: {p.display_name} =====")
+        self.log_signal.emit(
+            "===== " + t("Scan external programmer: {name}").format(
+                name=p.display_name) + " =====")
         cfg = p.programmer
 
         def worker():
             try:
                 res = programmer.probe(cfg, self.log_signal.emit)
             except Exception as e:  # never let the worker die silently
-                self.log_signal.emit(f"[probe] 异常: {e}")
-                res = programmer.ProbeResult(False, None, None, "unknown", f"异常: {e}")
+                self.log_signal.emit("[probe] " + t("exception: {e}").format(e=e))
+                res = programmer.ProbeResult(
+                    False, None, None, "unknown", t("exception: {e}").format(e=e))
             self.probe_signal.emit(res)
 
         threading.Thread(target=worker, daemon=True).start()
@@ -815,7 +950,6 @@ class ProductionTestGUI(QWidget):
             return
         self.env_deploy_btn.setEnabled(False)
         self.env_remove_btn.setEnabled(False)
-        self.tabs.setCurrentIndex(0)          # surface the live log
         # env logs stay ASCII/English on purpose: they interleave with output
         # from Windows tools (pnputil/wdi) that we can't force into one locale.
         self.log_signal.emit(
@@ -848,16 +982,16 @@ class ProductionTestGUI(QWidget):
         self.env_deploy_btn.setEnabled(True)
         self.env_remove_btn.setEnabled(True)
         if st == "deployed":
-            self.env_deploy_btn.setText("重新部署")
-            self.env_deploy_btn.setToolTip("规则已存在，可重新写入以更新")
-            self.env_remove_btn.setToolTip("移除已部署的规则")
+            self.env_deploy_btn.setText(t("Redeploy"))
+            self.env_deploy_btn.setToolTip(t("Rule exists; rewrite to update"))
+            self.env_remove_btn.setToolTip(t("Remove the deployed rule"))
         elif st == "absent":
-            self.env_deploy_btn.setText("部署")
+            self.env_deploy_btn.setText(t("Deploy"))
             self.env_deploy_btn.setToolTip("")
             self.env_remove_btn.setEnabled(False)
-            self.env_remove_btn.setToolTip("尚未部署，无需移除")
+            self.env_remove_btn.setToolTip(t("Not deployed; nothing to remove"))
         else:  # unknown (Windows)
-            self.env_deploy_btn.setText("部署")
+            self.env_deploy_btn.setText(t("Deploy"))
             self.env_deploy_btn.setToolTip("")
             self.env_remove_btn.setToolTip("")
 
@@ -871,9 +1005,11 @@ class ProductionTestGUI(QWidget):
         elif mode == Mode.APP:
             to_mode, title = "dfu", "APP → DFU"
         else:
-            QMessageBox.information(self, "无法切换", "未检测到该产品设备。")
+            QMessageBox.information(
+                self, t("Cannot switch"), t("No device for this product detected."))
             return
-        self.log_signal.emit(f"===== 辅助操作: 模式切换 {title} =====")
+        self.log_signal.emit(
+            "===== " + t("Auxiliary: mode switch {title}").format(title=title) + " =====")
         self._start(pipeline_mod.Pipeline.switch_mode(
             p, self._callbacks(), to_mode=to_mode,
             cable_index=self.probe_cable), reset_rows=False)
@@ -884,9 +1020,12 @@ class ProductionTestGUI(QWidget):
             return
         fw = self._override_firmware() or p.app_firmware
         if fw is None or not fw.is_file():
-            QMessageBox.warning(self, "固件缺失", f"固件文件不存在: {fw}")
+            QMessageBox.warning(
+                self, t("Firmware missing"),
+                t("Firmware file not found: {path}").format(path=fw))
             return
-        self.log_signal.emit(f"===== 复烧（返修）: {p.display_name} =====")
+        self.log_signal.emit(
+            "===== " + t("Reflash (repair): {name}").format(name=p.display_name) + " =====")
         self._start(pipeline_mod.Pipeline.reflash(
             p, self._callbacks(), fw, cable_index=self.probe_cable),
             reset_rows=False)
@@ -905,9 +1044,12 @@ class ProductionTestGUI(QWidget):
                  float(self.expected_table.item(r, 1).text()))
                 for r in range(channels)]
         except (TypeError, ValueError, AttributeError) as e:
-            QMessageBox.warning(self, "参数错误", str(e))
+            QMessageBox.warning(self, t("Parameter error"), str(e))
             return
-        self.log_signal.emit(f"===== 自定义采样: {channels}ch@{format_rate(rate)} =====")
+        self.log_signal.emit(
+            "===== " + t("Custom capture: {ch}ch@{rate}").format(
+                ch=channels, rate=format_rate(rate)) + " =====")
+        self._param_dialog.hide()   # step aside so the operator sees the log
         self._start(pipeline_mod.Pipeline.capture_only(
             p, self.sigrok, self._callbacks(), channels=channels,
             samplerate_hz=rate, samples=samples, voltage_threshold_v=volt,
@@ -916,14 +1058,14 @@ class ProductionTestGUI(QWidget):
     def cancel_pipeline(self):
         if self.pipeline is not None:
             self.pipeline.request_cancel()
-            self.log_signal.emit("已请求停止…")
+            self.log_signal.emit(t("Stop requested…"))
 
     def _add_resource_row(self, grid, row: int, label: str, on_browse):
         """一行"资源路径覆盖"：标签 + QLineEdit（placeholder 后填档案路径）+ … 浏览。
         返回该行的 QLineEdit。"""
         grid.addWidget(QLabel(label), row, 0)
         edit = QLineEdit()
-        edit.setPlaceholderText("默认使用产品档案")
+        edit.setPlaceholderText(t("Defaults to product profile"))
         btn = QPushButton("…"); btn.setFixedWidth(30)
         btn.clicked.connect(on_browse)
         grid.addWidget(edit, row, 1)
@@ -932,31 +1074,59 @@ class ProductionTestGUI(QWidget):
 
     def select_fw_file(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, "选择 app 固件", "", "固件/位流 (*.bin *.fs);;所有文件 (*)")
+            self, t("Select app firmware"), "",
+            t("Firmware/Bitstream (*.bin *.fs);;All files (*)"))
         if path:
             self.fw_file_edit.setText(path)
             self._update_enablement()
 
     def select_dfu_file(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, "选择 DFU 镜像", "", "位流 (*.bin *.fs);;所有文件 (*)")
+            self, t("Select DFU image"), "",
+            t("Bitstream (*.bin *.fs);;All files (*)"))
         if path:
             self.dfu_file_edit.setText(path)
             self._update_enablement()
 
     def select_ekey_file(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, "选择 eFuse 密钥", "", "eFuse 密钥 (*.ekey);;所有文件 (*)")
+            self, t("Select eFuse key"), "",
+            t("eFuse key (*.ekey);;All files (*)"))
         if path:
             self.ekey_file_edit.setText(path)
             self._update_enablement()
 
     def copy_report(self):
         QApplication.clipboard().setText(self.report_box.toPlainText())
-        self.copy_report_btn.setText("已复制 ✔")
-        QTimer.singleShot(1500, lambda: self.copy_report_btn.setText("📋 复制报告"))
+        self.copy_report_btn.setText(t("Copied") + " ✔")
+        QTimer.singleShot(
+            1500, lambda: self.copy_report_btn.setText("📋 " + t("Copy Report")))
 
     # -------------------------------------------------------------- slots
+
+    def _append_log(self, s: str):
+        # stable forwarding slot: always targets the CURRENT log_box, which a
+        # language switch replaces with a new widget (see _rebuild_ui).
+        self.log_box.append(s)
+
+    def _on_language_changed(self, _idx):
+        code = self.lang_combo.currentData()
+        if code is None or code == get_language():
+            return
+        if self.pipeline is not None and self.pipeline.running:
+            # can't rebuild the UI mid-run; revert the selection and explain
+            self.lang_combo.blockSignals(True)
+            i = self.lang_combo.findData(get_language())
+            if i >= 0:
+                self.lang_combo.setCurrentIndex(i)
+            self.lang_combo.blockSignals(False)
+            QMessageBox.information(
+                self, t("Cannot switch"),
+                t("Cannot switch language while a test is running."))
+            return
+        set_language(code)
+        QSettings().setValue("language", code)
+        self._rebuild_ui()
 
     def _on_step(self, sid: str, status: StepStatus):
         row = self.step_rows.get(sid)
@@ -968,9 +1138,9 @@ class ProductionTestGUI(QWidget):
             self._close_switch_popup()
         if status == StepStatus.RUNNING:
             label = row.label_text if row else sid
-            self.step_label.setText(f"当前步骤: {label}")
+            self.step_label.setText(t("Current step: {label}").format(label=label))
             if not self._prompt_text:
-                self._set_banner("running", f"运行中 — {label}")
+                self._set_banner("running", t("Running — {label}").format(label=label))
 
     def _on_prompt(self, text: str):
         self._prompt_text = text
@@ -985,7 +1155,7 @@ class ProductionTestGUI(QWidget):
         self._close_switch_popup()
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Information)
-        box.setWindowTitle("需要手动切换模式")
+        box.setWindowTitle(t("Manual mode switch required"))
         box.setText(text)
         box.setStandardButtons(QMessageBox.Ok)
         box.setModal(False)
@@ -1004,9 +1174,11 @@ class ProductionTestGUI(QWidget):
         self.efuse_status = res.efuse
         self.probe_cable = res.cable_index
         if res.programmer_present:
-            self.log_signal.emit(f"外置烧录器已连接：{res.detail}")
+            self.log_signal.emit(
+                t("External programmer connected: {detail}").format(detail=res.detail))
         else:
-            self.log_signal.emit(f"未检测到外置烧录器：{res.detail}")
+            self.log_signal.emit(
+                t("External programmer not detected: {detail}").format(detail=res.detail))
         self.refresh_device_status()   # 设备状态栏前缀的 eFuse 徽标 + 使能刷新
 
     def _on_finished(self, ok: bool, report: str):
@@ -1017,42 +1189,52 @@ class ProductionTestGUI(QWidget):
         if ok:
             self._set_banner("pass", f"PASS  ({elapsed:.1f}s)")
         else:
-            summary = f"；失败步骤: {', '.join(fail_steps)}" if fail_steps else ""
+            summary = (t("; failed steps: {items}").format(items=", ".join(fail_steps))
+                       if fail_steps else "")
             self._set_banner("fail", f"FAIL  ({elapsed:.1f}s){summary}")
         self._render_report(ok, report, elapsed)
         self.step_label.setText("")
         self.pipeline = None
         self._update_enablement()
         if ok and self._rescan_after:
-            self.log_signal.emit("eFuse 已锁，自动复扫外置烧录器以刷新状态…")
+            self.log_signal.emit(
+                t("eFuse locked; auto re-scanning the external programmer to "
+                  "refresh state…"))
             QTimer.singleShot(400, self.run_probe)
         self._rescan_after = False
 
     def _render_report(self, ok: bool, detail: str, elapsed: float):
         p = self.profile
         lines = [
-            "==== SLogic 产测报告 ====",
-            f"时间: {time.strftime('%Y-%m-%d %H:%M:%S')}",
-            f"产品: {p.display_name} ({p.id})" if p else "产品: -",
-            f"设备: {', '.join(str(d) for d in self.detected) or '未检测到'}",
-            f"总结果: {'PASS' if ok else 'FAIL'}  (耗时 {elapsed:.1f}s)",
+            "==== " + t("SLogic Production Test Report") + " ====",
+            t("Time: {ts}").format(ts=time.strftime('%Y-%m-%d %H:%M:%S')),
+            (t("Product: {name} ({id})").format(name=p.display_name, id=p.id)
+             if p else t("Product: -")),
+            t("Device: {devs}").format(
+                devs=', '.join(str(d) for d in self.detected) or t("not detected")),
+            t("Overall: {result}  (elapsed {s:.1f}s)").format(
+                result='PASS' if ok else 'FAIL', s=elapsed),
             "",
-            "-- 步骤状态 --",
+            "-- " + t("Step Status") + " --",
         ]
         for row in self.step_rows.values():
             _, _, text = STATUS_STYLE[row.status]
             dur = f" ({row.duration_s:.1f}s)" if row.duration_s else ""
-            lines.append(f"[{text}] {row.name.text()}{dur}")
+            lines.append(f"[{t(text)}] {row.name.text()}{dur}")
         if detail:
-            lines += ["", "-- 详情 --", detail]
-        lines += ["", "如需反馈问题，请复制本报告并附上运行日志相关片段。"]
+            lines += ["", "-- " + t("Details") + " --", detail]
+        lines += ["", t("To report an issue, copy this report and attach the "
+                        "relevant run-log excerpts.")]
         self.report_box.setPlainText("\n".join(lines))
-        if not ok:
-            self.tabs.setCurrentIndex(2)
 
 
 def main() -> None:
     app = QApplication(sys.argv)
+    # QSettings keying for the persisted language choice
+    app.setOrganizationName("Sipeed")
+    app.setApplicationName("SLogicPT")
+    saved = QSettings().value("language", "zh")
+    set_language(saved if isinstance(saved, str) else "zh")
     font = app.font()
     font.setPointSize(font.pointSize() + 2)
     app.setFont(font)

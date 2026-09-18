@@ -3,6 +3,8 @@ import time
 import usb.core
 import usb.util
 
+from ..i18n import t
+
 class USBDevice:
     def __init__(self, vid: int, pid: int, interface_num: int = 0):
         """
@@ -18,9 +20,9 @@ class USBDevice:
         from ..device_watch import libusb_backend
         backend = libusb_backend()
         if backend is None:
-            raise ValueError(
-                "未找到 libusb 后端（libusb-1.0.dll）：请放入 resources/bin/ "
-                "或安装系统 libusb-1.0")
+            raise ValueError(t(
+                "No libusb backend found (libusb-1.0.dll): put it in "
+                "resources/bin/ or install system libusb-1.0"))
 
         self.interface_num = interface_num
 
@@ -30,7 +32,7 @@ class USBDevice:
         # 因此每次建链前先做一次全设备复位（幂等、无害），复位后端点行为完全正常。
         dev = usb.core.find(idVendor=vid, idProduct=pid, backend=backend)
         if dev is None:
-            raise ValueError("设备未找到，请检查VID/PID或连接状态")
+            raise ValueError(t("Device not found; check the VID/PID or connection state"))
         try:
             dev.reset()  # 复位后设备重枚举；某些内核会抛 "No such device" 但已生效
         except usb.core.USBError:
@@ -40,7 +42,7 @@ class USBDevice:
 
         self.dev = usb.core.find(idVendor=vid, idProduct=pid, backend=backend)
         if self.dev is None:
-            raise ValueError("复位后未找到设备，请检查连接状态")
+            raise ValueError(t("Device not found after reset; check the connection state"))
 
         usb.util.claim_interface(self.dev, interface_num)
 
@@ -58,7 +60,7 @@ class USBDevice:
                 self.ep_in = endpoint
 
         if None in (self.ep_out, self.ep_in):
-            raise ValueError("未找到所需的输入/输出端点")
+            raise ValueError(t("Required input/output endpoints not found"))
 
     def write(self, data: bytes, timeout: int = 1000) -> int:
         """
@@ -111,4 +113,4 @@ if __name__ == "__main__":
             print(f"Received: {response.hex()}")
             
     except Exception as e:
-        print(f"USB通信错误: {e}")
+        print(t("USB communication error: {e}").format(e=e))

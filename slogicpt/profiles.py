@@ -24,6 +24,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
+from .i18n import t
+
 if getattr(sys, "frozen", False):
     # PyInstaller single binary: resources/ sits NEXT TO the executable
     # (admin-editable), never inside the bundle
@@ -258,17 +260,17 @@ def load_programmer(product_dir: Path,
     shared = shared or {}
     f = product_dir / "programmer.toml"
     if not f.is_file():
-        return None, [f"programmer.toml 缺失: {f}"]
+        return None, [t("programmer.toml missing: {f}").format(f=f)]
     try:
         doc = tomllib.loads(f.read_text(encoding="utf-8"))
     except (tomllib.TOMLDecodeError, OSError) as e:
-        return None, [f"programmer.toml 解析失败: {f}: {e}"]
+        return None, [t("programmer.toml parse failed: {f}: {e}").format(f=f, e=e)]
     praw = doc.get("programmer")
     if praw is None:
-        return None, [f"programmer.toml 缺 [programmer] 段: {f}"]
+        return None, [t("programmer.toml missing [programmer] section: {f}").format(f=f)]
     if "device" not in praw:
         # device 是唯一各产品必填、无默认的字段（IDCODE 校验必须精确匹配）
-        return None, [f"programmer.toml [programmer] 缺 device: {f}"]
+        return None, [t("programmer.toml [programmer] missing device: {f}").format(f=f)]
     try:
         # 以下各项：产品档案覆盖 -> 共享 resources/programmer.toml -> 代码默认。
         # cli 优先级
@@ -280,7 +282,7 @@ def load_programmer(product_dir: Path,
         cables = [int(c) for c in (praw.get("cable_candidates")
                                    or shared.get("cable_candidates") or DEFAULT_CABLES)]
         if not cables:
-            raise ValueError("cable_candidates 为空")
+            raise ValueError(t("cable_candidates is empty"))
 
         # flash / efuse：共享默认 + 产品覆盖（按键合并）
         fraw = {**(shared.get("flash") or {}), **(praw.get("flash") or {})}
@@ -315,7 +317,7 @@ def load_programmer(product_dir: Path,
                     if "/" in str(a) and not Path(str(a)).is_absolute() else str(a)
                     for a in args]
             if not switch:
-                raise ValueError("[programmer.switch] 需至少声明 dfu2app 或 app2dfu")
+                raise ValueError(t("[programmer.switch] must declare at least dfu2app or app2dfu"))
 
         prog = Programmer(
             cli=cli,
@@ -328,7 +330,7 @@ def load_programmer(product_dir: Path,
         )
         return prog, []
     except (KeyError, ValueError, TypeError) as e:
-        return None, [f"programmer.toml [programmer] 无效: {e}"]
+        return None, [t("programmer.toml [programmer] invalid: {e}").format(e=e)]
 
 
 def _parse_profile(product_dir: Path,
@@ -339,14 +341,15 @@ def _parse_profile(product_dir: Path,
     try:
         doc = tomllib.loads(toml_file.read_text(encoding="utf-8"))
     except (tomllib.TOMLDecodeError, OSError) as e:
-        return None, [Problem("error", pid_for_log, f"档案解析失败: {e}")]
+        return None, [Problem("error", pid_for_log, t("profile parse failed: {e}").format(e=e))]
 
     def err(msg: str) -> tuple[None, list[Problem]]:
         problems.append(Problem("error", pid_for_log, msg))
         return None, problems
 
     if doc.get("schema_version") != SCHEMA_VERSION:
-        return err(f"schema_version 应为 {SCHEMA_VERSION}, 实际 {doc.get('schema_version')!r}")
+        return err(t("schema_version should be {expected}, actual {actual!r}").format(
+            expected=SCHEMA_VERSION, actual=doc.get('schema_version')))
 
     try:
         product = doc["product"]
@@ -357,48 +360,54 @@ def _parse_profile(product_dir: Path,
 
         prod_id = str(product["id"])
         if prod_id != product_dir.name:
-            return err(f"product.id ({prod_id}) 与目录名 ({product_dir.name}) 不一致")
+            return err(t("product.id ({pid}) does not match directory name ({dirname})").format(
+                pid=prod_id, dirname=product_dir.name))
 
         dfu_pid = usb.get("dfu_pid")
         if dfu_pid is None:
             problems.append(Problem(
-                "warning", prod_id, "usb.dfu_pid 未配置，DFU 与一键流程将禁用"))
+                "warning", prod_id,
+                t("usb.dfu_pid not configured; DFU and one-click flow will be disabled")))
 
         num_channels = int(capture["num_channels"])
         channel_options = [int(c) for c in capture["channel_options"]]
         if any(c <= 0 or c > num_channels for c in channel_options):
-            return err(f"channel_options {channel_options} 超出 num_channels={num_channels}")
+            return err(t("channel_options {opts} exceed num_channels={n}").format(
+                opts=channel_options, n=num_channels))
 
         samplerates_hz = sorted(parse_rate(r) for r in capture["samplerates"])
 
         default_channels = int(capture.get("default_channels", channel_options[-1]))
         if default_channels not in channel_options:
-            return err(f"default_channels={default_channels} 不在 channel_options 中")
+            return err(t("default_channels={dc} not in channel_options").format(dc=default_channels))
         limit = int(capture["max_bandwidth_mbps"]) * 1_000_000
         legal_defaults = [r for r in samplerates_hz
                           if default_channels * r // 8 <= limit]
         default_samplerate_hz = parse_rate(
             capture.get("default_samplerate", legal_defaults[-1] if legal_defaults else samplerates_hz[0]))
         if default_samplerate_hz not in legal_defaults:
-            return err(f"default_samplerate={capture.get('default_samplerate')} "
-                       f"对 {default_channels}ch 不合法（不在档位或超带宽）")
+            return err(t("default_samplerate={sr} is invalid for {dc}ch (not in the list or exceeds bandwidth)").format(
+                sr=capture.get('default_samplerate'), dc=default_channels))
 
         tests = []
-        for i, t in enumerate(doc["capture"].get("tests", [])):
-            ch = int(t["channels"])
-            rate = parse_rate(t["samplerate"])
+        for i, ct in enumerate(doc["capture"].get("tests", [])):
+            ch = int(ct["channels"])
+            rate = parse_rate(ct["samplerate"])
             if ch > num_channels:
-                return err(f"capture.tests[{i}].channels={ch} 超出 num_channels")
+                return err(t("capture.tests[{i}].channels={ch} exceeds num_channels").format(i=i, ch=ch))
             if rate not in samplerates_hz:
-                return err(f"capture.tests[{i}].samplerate={t['samplerate']} 不在 samplerates 列表中")
-            tests.append(CaptureTest(ch, rate, str(t.get("samples", capture.get("default_samples", "1M")))))
+                return err(t("capture.tests[{i}].samplerate={sr} not in samplerates list").format(
+                    i=i, sr=ct['samplerate']))
+            tests.append(CaptureTest(ch, rate, str(ct.get("samples", capture.get("default_samples", "1M")))))
         if not tests:
-            problems.append(Problem("warning", prod_id, "capture.tests 为空，一键流程无测试点"))
+            problems.append(Problem("warning", prod_id,
+                                    t("capture.tests is empty; one-click flow has no test points")))
 
         max_bw = int(capture["max_bandwidth_mbps"])
-        for t in tests:
-            if t.channels * t.samplerate_hz // 8 > max_bw * 1_000_000:
-                return err(f"测试点 {t.channels}ch@{format_rate(t.samplerate_hz)} 超出带宽 {max_bw}MB/s")
+        for ct in tests:
+            if ct.channels * ct.samplerate_hz // 8 > max_bw * 1_000_000:
+                return err(t("test point {ch}ch@{rate} exceeds bandwidth {bw}MB/s").format(
+                    ch=ct.channels, rate=format_rate(ct.samplerate_hz), bw=max_bw))
 
         app_rel = firmware.get("app")
         app_firmware = (product_dir / app_rel).resolve() if app_rel else None
@@ -453,7 +462,7 @@ def _parse_profile(product_dir: Path,
         )
         return profile, problems
     except (KeyError, ValueError, TypeError) as e:
-        kind = "缺少必填字段" if isinstance(e, KeyError) else "字段无效"
+        kind = t("missing required field") if isinstance(e, KeyError) else t("invalid field")
         return err(f"{kind}: {e!r}")
 
 
@@ -463,12 +472,13 @@ def load_profiles(products_dir: Path = PRODUCTS_DIR) -> tuple[list[ProductProfil
     profiles: list[ProductProfile] = []
     problems: list[Problem] = []
     if not products_dir.is_dir():
-        return [], [Problem("error", None, f"产品档案目录不存在: {products_dir}")]
+        return [], [Problem("error", None,
+                            t("product profile directory does not exist: {d}").format(d=products_dir))]
     dirs = sorted(d for d in products_dir.iterdir()
                   if d.is_dir() and (d / "product.toml").is_file())
     if not dirs:
         return [], [Problem("error", None,
-                            f"产品档案目录为空: {products_dir}，请放置 <product_id>/product.toml")]
+                            t("product profile directory is empty: {d}; please place <product_id>/product.toml").format(d=products_dir))]
     shared = load_shared_programmer()   # 共享 cli/timeout，各产品继承
     for d in dirs:
         profile, probs = _parse_profile(d, shared)
@@ -485,12 +495,14 @@ def load_profiles(products_dir: Path = PRODUCTS_DIR) -> tuple[list[ProductProfil
         if key in app_seen:
             problems.append(Problem(
                 "error", p.id,
-                f"app VID/PID {key[0]:#06x}:{key[1]:#06x} 与产品 {app_seen[key]} 冲突"))
+                t("app VID/PID {vidpid} conflicts with product {other}").format(
+                    vidpid=f"{key[0]:#06x}:{key[1]:#06x}", other=app_seen[key])))
         app_seen[key] = p.id
         if key in dfu_pids:
             problems.append(Problem(
                 "error", p.id,
-                f"app VID/PID {key[0]:#06x}:{key[1]:#06x} 与产品 {dfu_pids[key]} 的 dfu_pid 冲突"))
+                t("app VID/PID {vidpid} conflicts with dfu_pid of product {other}").format(
+                    vidpid=f"{key[0]:#06x}:{key[1]:#06x}", other=dfu_pids[key])))
     return profiles, problems
 
 
@@ -501,39 +513,43 @@ def check_resources(profiles: list[ProductProfile],
     if sigrok_bin is None:
         problems.append(Problem(
             "error", None,
-            f"未找到 sigrok-cli 二进制，请按平台命名放入 {RESOURCES_DIR / 'bin'}（见 resources/README.md），采样功能禁用"))
+            t("sigrok-cli binary not found; place it in {d} with the platform-specific name (see resources/README.md); capture disabled").format(
+                d=RESOURCES_DIR / 'bin')))
     for p in profiles:
         if p.app_firmware is None:
-            problems.append(Problem("warning", p.id, "firmware.app 未配置，DFU 与一键流程禁用"))
+            problems.append(Problem("warning", p.id,
+                                    t("firmware.app not configured; DFU and one-click flow disabled")))
         elif not p.app_firmware.is_file():
             problems.append(Problem(
                 "warning", p.id,
-                f"应用固件缺失: {p.app_firmware}，DFU 与一键流程禁用"))
+                t("application firmware missing: {path}; DFU and one-click flow disabled").format(
+                    path=p.app_firmware)))
         prog = p.programmer
         if prog is not None:
             if not prog.cli:
                 problems.append(Problem(
                     "warning", p.id,
-                    "未找到烧录器 CLI（programmer.cli 未声明且 resources/bin 无 Gowin AppImage），"
-                    "烧空板/eFuse 功能禁用"))
+                    t("programmer CLI not found (programmer.cli not declared and no Gowin AppImage in resources/bin); blank-flash/eFuse disabled")))
             if prog.flash is not None and not prog.flash.image.is_file():
                 problems.append(Problem(
                     "warning", p.id,
-                    f"烧空板 DFU 镜像缺失: {prog.flash.image}，烧空板禁用"))
+                    t("blank-flash DFU image missing: {path}; blank-flash disabled").format(
+                        path=prog.flash.image)))
             if prog.efuse_key_file is not None and not prog.efuse_key_file.is_file():
                 problems.append(Problem(
                     "warning", p.id,
-                    f"eFuse 密钥文件缺失: {prog.efuse_key_file}，"
-                    "烧空板的 eFuse 写锁前置步骤将失败"))
+                    t("eFuse key file missing: {path}; the eFuse write-lock prerequisite of blank-flash will fail").format(
+                        path=prog.efuse_key_file)))
             for d, args in prog.switch.items():
-                for t in args:
-                    tp = Path(t)
+                for tok in args:
+                    tp = Path(tok)
                     # 只查被解析为产品目录内路径的 token（即声明里带 "/" 的资源引用）
                     if tp.is_absolute() and tp.is_relative_to(p.product_dir) \
                             and not tp.is_file():
                         problems.append(Problem(
                             "warning", p.id,
-                            f"切换 {d} 引用的文件缺失: {tp}，该方向回退弹窗人工"))
+                            t("switch {d} references a missing file: {path}; this direction falls back to a manual dialog").format(
+                                d=d, path=tp)))
     return problems
 
 

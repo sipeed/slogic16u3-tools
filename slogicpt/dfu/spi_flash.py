@@ -1,3 +1,4 @@
+from ..i18n import t
 from .usb_device import USBDevice
 from .spi_device import SPIDevice
 
@@ -111,11 +112,11 @@ class SPIFlashDevice:
             while True:
                 sr = self.flash_dev.spi.xfer(b'\x05', 1)[0]  # Status Register-1
                 if sr == 0xFF:
-                    raise RuntimeError("Flash 通信异常：SR1 恒读 0xFF（总线挂起）")
+                    raise RuntimeError(t("Flash communication error: SR1 stuck reading 0xFF (bus hung)"))
                 if not (sr & 0x1):  # S0:WIP=0，写入完成
                     break
                 if time.time() - t0 > self.WIP_TIMEOUT_S:
-                    raise RuntimeError("Flash 写等待超时：WIP 未在预期内清零")
+                    raise RuntimeError(t("Flash write wait timed out: WIP did not clear in time"))
             self.flash_dev.spi.xfer(b'\x04')  # Write Disable
 
 
@@ -126,14 +127,14 @@ def flash_firmware(vid: int, pid: int, addr: int, firmware: bytes,
                    verify: bool = True, dump_file: str | None = None) -> None:
     """Erase + program + optional verify.  Raises RuntimeError on failure."""
     if addr % ERASE_BLOCK != 0:
-        raise RuntimeError(f"起始地址 0x{addr:06X} 未按 64KB 对齐")
+        raise RuntimeError(t("Start address 0x{addr:06X} is not 64KB-aligned").format(addr=addr))
     size = len(firmware)
     if size == 0:
-        raise RuntimeError("固件为空")
+        raise RuntimeError(t("Firmware is empty"))
 
     with SPIFlashDevice(vid, pid) as flash:
         if not flash.reset():
-            raise RuntimeError("SPI flash reset 失败")
+            raise RuntimeError(t("SPI flash reset failed"))
         # 读 ID 确认 flash 可用：上次会话中途中断可能让 flash 停在坏状态，
         # 首次读 ID 返回 0xffffff/0x000000，此时重试一次 reset 再读；仍无响应则明确报错，
         # 绝不在坏状态上进入擦除/编程（否则又会触发 WIP 死等/写不进）。
@@ -142,7 +143,7 @@ def flash_firmware(vid: int, pid: int, addr: int, firmware: bytes,
             flash.reset()
             dev_id = flash.read_id().hex()
             if dev_id in ('ffffff', '000000'):
-                raise RuntimeError(f"Flash 无响应（ID={dev_id}），请检查 DFU 连接后重试")
+                raise RuntimeError(t("Flash not responding (ID={dev_id}); check the DFU connection and retry").format(dev_id=dev_id))
         print("ID:", dev_id)
         print("UID:", flash.read_uid().hex())
 
@@ -155,7 +156,7 @@ def flash_firmware(vid: int, pid: int, addr: int, firmware: bytes,
             flash.erase_64kb(a)
         erased = flash.read_data(addr, size)
         if erased.count(0xFF) != len(erased):
-            raise RuntimeError("擦除后校验失败：区域非全 0xFF")
+            raise RuntimeError(t("Post-erase verify failed: region is not all 0xFF"))
 
         flash.program(addr, firmware)
 
@@ -163,7 +164,7 @@ def flash_firmware(vid: int, pid: int, addr: int, firmware: bytes,
             readback = flash.read_data(addr, size)
             if readback != firmware:
                 diff = next(i for i in range(size) if readback[i] != firmware[i])
-                raise RuntimeError(f"烧写校验失败：首个差异在 0x{addr+diff:06X}")
+                raise RuntimeError(t("Flash verify failed: first difference at 0x{pos:06X}").format(pos=addr+diff))
             print("Verify OK")
 
 

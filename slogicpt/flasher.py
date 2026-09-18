@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Callable
 
 from .dfu.spi_flash import flash_firmware
+from .i18n import t
 
 
 class FlashError(Exception):
@@ -45,12 +46,13 @@ def flash_app_firmware(*, vid: int, pid: int, addr: int, firmware: Path,
     """
     firmware = Path(firmware)
     if not firmware.is_file():
-        raise FlashError(f"固件文件不存在: {firmware}")
+        raise FlashError(t("Firmware file not found: {path}").format(path=firmware))
     if cancel is not None and cancel.is_set():
-        raise FlashError("已取消")
+        raise FlashError(t("Cancelled"))
     data = firmware.read_bytes()
     if log_cb:
-        log_cb(f"固件: {firmware} ({len(data)} bytes) -> {vid:#06x}:{pid:#06x} @ {addr:#x}")
+        log_cb(t("Firmware: {path} ({size} bytes) -> {vid:#06x}:{pid:#06x} @ {addr:#x}").format(
+            path=firmware, size=len(data), vid=vid, pid=pid, addr=addr))
 
     out = _LogBridge(log_cb) if log_cb else io.StringIO()
     try:
@@ -63,13 +65,14 @@ def flash_app_firmware(*, vid: int, pid: int, addr: int, firmware: Path,
                 import usb.core
                 if not isinstance(first, usb.core.USBError):
                     raise
-                print(f"USB 传输失败（{first}），复位设备后重试一次…")
+                print(t("USB transfer failed ({err}), resetting device and "
+                        "retrying once…").format(err=first))
                 _usb_reset(vid, pid)
                 flash_firmware(vid, pid, addr, data, verify=verify)
     except FlashError:
         raise
     except Exception as e:  # usb.core errors, RuntimeError, assertion...
-        raise FlashError(f"DFU 烧写失败: {e}") from e
+        raise FlashError(t("DFU flash failed: {err}").format(err=e)) from e
     finally:
         out.flush()
 
@@ -80,7 +83,7 @@ def _usb_reset(vid: int, pid: int, settle_s: float = 2.0) -> None:
     import usb.util
     dev = usb.core.find(idVendor=vid, idProduct=pid)
     if dev is None:
-        raise FlashError("复位后未找到设备")
+        raise FlashError(t("Device not found after reset"))
     try:
         dev.reset()   # 常见现象：抛 "Entity not found" 但设备已实际重枚举
     except usb.core.USBError:

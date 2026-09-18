@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Literal
 
+from .i18n import t
 from .profiles import Programmer
 from .sigrok import _popen_kwargs, watchdog
 
@@ -112,7 +113,7 @@ def _run_argv(argv: list[str], timeout_s: float,
             argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, bufsize=1, cwd=cwd, **_popen_kwargs())
     except OSError as e:
-        log_cb(f"[programmer] 启动失败: {e}")
+        log_cb("[programmer] " + t("Launch failed: {e}").format(e=e))
         return -1, ""
     lines: list[str] = []
     with watchdog(proc, timeout_s, cancel) as fate:
@@ -124,7 +125,8 @@ def _run_argv(argv: list[str], timeout_s: float,
                 log_cb(s)
         proc.wait()
     if fate.killed_by:
-        log_cb(f"[programmer] {'已取消' if fate.killed_by == 'cancel' else f'超时 ({timeout_s:.0f}s)'}")
+        log_cb("[programmer] " + (t("cancelled") if fate.killed_by == 'cancel'
+               else t("timed out ({secs}s)").format(secs=f"{timeout_s:.0f}")))
         return -1, "\n".join(lines)
     return proc.returncode, "\n".join(lines)
 
@@ -149,26 +151,26 @@ def probe(prog: Programmer, log_cb: Callable[[str], None] = print,
     """Try each cable candidate until one reads a device, then read its eFuse
     lock state.  Never writes the chip."""
     if not prog.cli:
-        log_cb("[probe] 未找到烧录器 CLI（programmer.cli 未声明且无默认 AppImage）")
-        return ProbeResult(False, None, None, "unknown", "未找到烧录器 CLI")
+        log_cb("[probe] " + t("Programmer CLI not found (programmer.cli undeclared and no default AppImage)"))
+        return ProbeResult(False, None, None, "unknown", t("Programmer CLI not found"))
     dev = prog.device
     for cable in prog.cable_candidates:
         if cancel is not None and cancel.is_set():
-            return ProbeResult(False, None, None, "unknown", "已取消")
-        log_cb(f"[probe] 尝试 cable-index {cable}（device={dev}）读器件码…")
+            return ProbeResult(False, None, None, "unknown", t("cancelled"))
+        log_cb("[probe] " + t("Trying cable-index {cable} (device={dev}) to read the IDCODE...").format(cable=cable, dev=dev))
         _, out = _run(prog, [*_cable_args(dev, cable), "--run", "0"], log_cb, cancel)
         if not _device_online(out):
             continue
-        log_cb(f"[probe] cable-index {cable} 读到器件，读 eFuse 锁定状态…")
+        log_cb("[probe] " + t("cable-index {cable} read a device, reading eFuse lock state...").format(cable=cable))
         _, kout = _run(prog, [*_cable_args(dev, cable), "--keyread"], log_cb, cancel)
         efuse = _efuse_state(kout)
-        log_cb(f"[probe] 结果：外置烧录器已连接，device={dev}，"
-               f"cable-index={cable}，eFuse={efuse}")
+        log_cb("[probe] " + t("Result: external programmer connected, device={dev}, "
+               "cable-index={cable}, eFuse={efuse}").format(dev=dev, cable=cable, efuse=efuse))
         return ProbeResult(True, cable, dev, efuse,
                            f"cable-index {cable}, device {dev}, eFuse={efuse}")
-    log_cb("[probe] 结果：未在任何 cable 上读到器件——外置烧录器未连接或未上电")
+    log_cb("[probe] " + t("Result: no device read on any cable -- external programmer not connected or unpowered"))
     return ProbeResult(False, None, None, "unknown",
-                       "未在任何 cable 上读到器件（外置烧录器未连接？）")
+                       t("No device read on any cable (external programmer not connected?)"))
 
 
 def _resolve_cable(prog: Programmer, cable_index: int | None,
@@ -177,7 +179,7 @@ def _resolve_cable(prog: Programmer, cable_index: int | None,
     """Use the given cable, or probe to find one (write ops need a cable)."""
     if cable_index is not None:
         return cable_index
-    log_cb("[programmer] 未提供 cable-index，先探测…")
+    log_cb("[programmer] " + t("No cable-index provided, probing first..."))
     res = probe(prog, log_cb, cancel)
     return res.cable_index if res.programmer_present else None
 
@@ -190,11 +192,11 @@ def flash(prog: Programmer, cable_index: int | None = None,
     `image` 覆盖 op.image（GUI 会话级资源路径覆盖）。"""
     op = prog.flash
     if op is None:
-        log_cb("[flash] programmer.toml 未声明 [programmer.flash]，无法烧录")
+        log_cb("[flash] " + t("programmer.toml declares no [programmer.flash]; cannot flash"))
         return False
     img = image if image is not None else op.image
     if not img.is_file():
-        log_cb(f"[flash] DFU 镜像缺失: {img}")
+        log_cb("[flash] " + t("DFU image missing: {img}").format(img=img))
         return False
     if op.argv:
         # 自定义烧录命令（如 openFPGALoader，Windows 上比 Gowin exe 快 ~15 倍）：
@@ -202,30 +204,31 @@ def flash(prog: Programmer, cable_index: int | None = None,
         # Gowin --run 66 (exFlash Verify) 交叉校验过。
         argv = [a.replace("{image}", str(img))
                  .replace("{spiaddr}", f"{op.spiaddr:#x}") for a in op.argv]
-        log_cb(f"[flash] 烧空板（自定义命令，看门狗 {op.timeout_s:.0f}s）: "
-               f"{' '.join(argv)}")
+        log_cb("[flash] " + t("Blank-flash (custom command, watchdog {secs}s): ").format(secs=f"{op.timeout_s:.0f}")
+               + ' '.join(argv))
         rc, out = _run_argv(argv, op.timeout_s, log_cb, cancel)
         low = out.lower()
         ok = rc == 0 and "error" not in low and "fail" not in low
-        log_cb(f"[flash] {'烧录完成' if ok else '烧录失败'}")
+        log_cb("[flash] " + (t("flash complete") if ok else t("flash failed")))
         return ok
     if not prog.cli:
-        log_cb("[flash] 未找到烧录器 CLI，无法烧录")
+        log_cb("[flash] " + t("Programmer CLI not found; cannot flash"))
         return False
     cable = _resolve_cable(prog, cable_index, log_cb, cancel)
     if cable is None:
-        log_cb("[flash] 未找到可用 cable，外置烧录器未连接？")
+        log_cb("[flash] " + t("No usable cable found; external programmer not connected?"))
         return False
-    log_cb(f"[flash] 烧空板：device={prog.device} cable-index={cable} "
-           f"run={op.run} --fsFile={img.name} spiaddr={op.spiaddr:#08x} "
-           f"(看门狗 {op.timeout_s:.0f}s)")
+    log_cb("[flash] " + t("Blank-flash: device={device} cable-index={cable} "
+           "run={run} --fsFile={fsfile} spiaddr={spiaddr} (watchdog {secs}s)").format(
+           device=prog.device, cable=cable, run=op.run, fsfile=img.name,
+           spiaddr=f"{op.spiaddr:#08x}", secs=f"{op.timeout_s:.0f}"))
     # --fsFile 接受 .fs / .bin 位流；需绝对路径（op.image 已 resolve）
     rc, out = _run(prog, [*_cable_args(prog.device, cable),
                           "--run", str(op.run), "--fsFile", str(img),
                           "--spiaddr", f"{op.spiaddr:#08x}"], log_cb, cancel,
                    timeout_s=op.timeout_s)
     ok = _write_ok(rc, out)
-    log_cb(f"[flash] {'烧录完成' if ok else '烧录失败'}")
+    log_cb("[flash] " + (t("flash complete") if ok else t("flash failed")))
     return ok
 
 
@@ -235,16 +238,16 @@ def efuse_state(prog: Programmer, cable_index: int | None = None,
                 ) -> tuple[EFuse, int | None]:
     """读 eFuse 锁定状态（--keyread，只读）。返回 (状态, 实际使用的 cable)。"""
     if not prog.cli:
-        log_cb("[efuse] 未找到烧录器 CLI")
+        log_cb("[efuse] " + t("Programmer CLI not found"))
         return "unknown", None
     cable = _resolve_cable(prog, cable_index, log_cb, cancel)
     if cable is None:
-        log_cb("[efuse] 未找到可用 cable，外置烧录器未连接？")
+        log_cb("[efuse] " + t("No usable cable found; external programmer not connected?"))
         return "unknown", None
     _, out = _run(prog, [*_cable_args(prog.device, cable), "--keyread"],
                   log_cb, cancel)
     state = _efuse_state(out)
-    log_cb(f"[efuse] 状态: {state}（cable-index={cable}）")
+    log_cb("[efuse] " + t("state: {state} (cable-index={cable})").format(state=state, cable=cable))
     return state, cable
 
 
@@ -259,15 +262,15 @@ def switch(prog: Programmer, direction: str, cable_index: int | None = None,
         return False
     cable = _resolve_cable(prog, cable_index, log_cb, cancel)
     if cable is None:
-        log_cb("[switch] 未找到可用 cable，外置烧录器未连接？")
+        log_cb("[switch] " + t("No usable cable found; external programmer not connected?"))
         return False
-    log_cb(f"[switch] 经外置烧录器切换（{direction}）：device={prog.device} "
-           f"cable-index={cable}")
+    log_cb("[switch] " + t("Switching via external programmer ({direction}): device={device} "
+           "cable-index={cable}").format(direction=direction, device=prog.device, cable=cable))
     # 切换多为 SRAM 写位流（写操作），给比探测长的看门狗
     rc, out = _run(prog, [*_cable_args(prog.device, cable), *args],
                    log_cb, cancel, timeout_s=max(prog.timeout_s, 300))
     ok = _write_ok(rc, out)
-    log_cb(f"[switch] {'切换命令完成' if ok else '切换命令失败'}")
+    log_cb("[switch] " + (t("switch command complete") if ok else t("switch command failed")))
     return ok
 
 
@@ -278,28 +281,28 @@ def efuse_lock(prog: Programmer, cable_index: int | None = None,
     """Write the AES key eFuse and lock it (IRREVERSIBLE).
     `key_file` 覆盖 prog.efuse_key_file（GUI 会话级资源路径覆盖）。"""
     if not prog.cli:
-        log_cb("[efuse] 未找到烧录器 CLI，无法写锁")
+        log_cb("[efuse] " + t("Programmer CLI not found; cannot write-lock"))
         return False
     key = key_file if key_file is not None else prog.efuse_key_file
     if key is None:
-        log_cb("[efuse] programmer.toml 未声明 [programmer.efuse]，无法写锁")
+        log_cb("[efuse] " + t("programmer.toml declares no [programmer.efuse]; cannot write-lock"))
         return False
     if not key.is_file():
-        log_cb(f"[efuse] 密钥文件缺失: {key}")
+        log_cb("[efuse] " + t("Key file missing: {key}").format(key=key))
         return False
     cable = _resolve_cable(prog, cable_index, log_cb, cancel)
     if cable is None:
-        log_cb("[efuse] 未找到可用 cable，外置烧录器未连接？")
+        log_cb("[efuse] " + t("No usable cable found; external programmer not connected?"))
         return False
-    log_cb(f"[efuse] 写入并锁定 AES 密钥（不可逆）：device={prog.device} "
-           f"cable-index={cable} keyFile={key.name}")
+    log_cb("[efuse] " + t("Writing and locking AES key (irreversible): device={device} "
+           "cable-index={cable} keyFile={keyfile}").format(device=prog.device, cable=cable, keyfile=key.name))
     # 写操作看门狗下限：不可逆操作中途被杀风险最大，宁可多等
     rc, out = _run(prog, [*_cable_args(prog.device, cable),
                           "--keywritefile", "--keyFile", str(key),
                           "--keylock"], log_cb, cancel,
                    timeout_s=max(prog.timeout_s, 120))
     ok = _write_ok(rc, out)
-    log_cb(f"[efuse] {'写锁完成（密钥已写入并锁定）' if ok else '写锁失败'}")
+    log_cb("[efuse] " + (t("write-lock complete (key written and locked)") if ok else t("write-lock failed")))
     return ok
 
 

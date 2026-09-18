@@ -28,6 +28,8 @@ from typing import Callable
 import usb.core
 import usb.util
 
+from .i18n import t
+
 RECONFIG_REQTYPE = 0x40    # Vendor, host-to-device, device recipient
 RECONFIG_BREQUEST = 0x30
 RECONFIG_TRIGGER = 0x0001
@@ -51,14 +53,17 @@ def reconfig(vid: int, pid: int, log_cb: Callable[[str], None] | None = None) ->
     from .device_watch import libusb_backend   # 共用内置/系统 libusb 后端
     dev = usb.core.find(idVendor=vid, idProduct=pid, backend=libusb_backend())
     if dev is None:
-        raise ModeSwitchError(f"未找到设备 {vid:#06x}:{pid:#06x}，无法发送 RECONFIG")
+        raise ModeSwitchError(
+            t("Device {vid:#06x}:{pid:#06x} not found, cannot send RECONFIG").format(
+                vid=vid, pid=pid))
     try:
         dev.ctrl_transfer(RECONFIG_REQTYPE, RECONFIG_BREQUEST,
                           RECONFIG_TRIGGER, RECONFIG_MAGIC, None)
-        _log(f"RECONFIG 已发送至 {vid:#06x}:{pid:#06x}")
+        _log(t("RECONFIG sent to {vid:#06x}:{pid:#06x}").format(vid=vid, pid=pid))
     except usb.core.USBError as e:
         # 触发后设备可能立即离线，status stage 报错属预期
-        _log(f"RECONFIG 已触发（设备离线，控制传输返回 {e}，属预期）")
+        _log(t("RECONFIG triggered (device offline, control transfer "
+               "returned {err}, expected)").format(err=e))
     finally:
         usb.util.dispose_resources(dev)
 

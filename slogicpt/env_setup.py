@@ -28,6 +28,7 @@ import tempfile
 import time
 from pathlib import Path
 
+from .i18n import t
 from .profiles import PLATFORM_KEY, RESOURCES_DIR
 
 # --- identities -------------------------------------------------------------
@@ -62,18 +63,20 @@ def requirement() -> str:
 
 
 def title() -> str:
-    return {"udev": "Linux 设备权限 (udev)",
-            "winusb": "Windows 驱动 (WinUSB)"}.get(requirement(), "")
+    return {"udev": t("Linux device permissions (udev)"),
+            "winusb": t("Windows driver (WinUSB)")}.get(requirement(), "")
 
 
 def hint() -> str:
     req = requirement()
     if req == "udev":
-        return ("为 SLogic(359F) 与 FTDI 线缆(0403:6010) 安装 udev 规则，"
-                "免 root 访问；部署会弹出授权框，之后重新插拔设备生效。")
+        return t("Install a udev rule for SLogic (359F) and the FTDI cable "
+                 "(0403:6010) for root-free access; deploying pops up an "
+                 "authorization dialog, then replug the device to take effect.")
     if req == "winusb":
-        return ("将 FTDI A 通道(0403:6010 接口0)绑定到 WinUSB，"
-                "openFPGALoader 高速烧录所需；部署会弹出 UAC 授权框。")
+        return t("Bind the FTDI A-channel (0403:6010 interface 0) to WinUSB, "
+                 "required by openFPGALoader's high-speed flashing; deploying "
+                 "pops up a UAC authorization dialog.")
     return ""
 
 
