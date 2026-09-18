@@ -157,14 +157,31 @@ GUI 顶栏"⚠ 警告"角标里的每一条都对应一个待放置/待确认项
   是其 exe 自身实现），而 openFPGALoader 仅 **~12s（快 15 倍）**，写入内容已用 Gowin
   `--run 66`（exFlash Verify）交叉校验一致。共享 `programmer.toml` 的
   `[programmer.flash] argv_windows` 已默认声明走 openFPGALoader；工位放置：
-  1. 把 openFPGALoader.exe + 依赖 DLL（libftdi1/libusb-1.0/zlib1/libgcc/libstdc++/
-     libwinpthread，来自 MSYS2 mingw64 包）放到 `bin/openFPGALoader/`；
-  2. **一次性**给 FTDI 线缆 A 通道装 WinUSB 驱动（命令行免点击，`wdi-simple.exe`
-     也放在 `bin/openFPGALoader/`）：
+  1. 把 `openFPGALoader.exe` 放到 `bin/openFPGALoader/`。**这是一个静态单文件 exe，
+     不依赖任何第三方 DLL**（libusb/libftdi/zlib 及 C/C++ 运行库全部静态链接，仅用系统自带
+     的 KERNEL32 / UCRT `api-ms-win-crt-*`），解压即用、无需再摆一堆 mingw64 DLL；
+  2. **一次性**给 FTDI 线缆 A 通道装 WinUSB 驱动——**推荐在 GUI「配置」页的
+     「环境准备」里点「部署」一键完成**（弹 UAC 授权，内部即调用同目录的 `wdi-simple.exe`）；
+     也可命令行免点击：
      `bin\openFPGALoader\wdi-simple.exe -v 0x0403 -p 0x6010 -i 0 -t 0 -n "USB Serial Converter A (WinUSB)"`
      装完 Gowin 的探测/eFuse 自动改走 `cable-index 5`（WINUSB），ftd2xx 的 4/1 失效属预期；
+     需要还原时点同处的「移除」（或用设备管理器删掉该 WinUSB 驱动）；
   3. 回退：删掉共享 `programmer.toml` 里的 `argv_windows` 行即回到 Gowin 慢速烧录
      （可执行文件缺失时代码也会自动回退）。
+
+  > openFPGALoader 官方 v1.1.1 GitHub release 只提供 MSYS2 动态包（exe + libftdi1 /
+  > libusb-1.0 / zlib1 / libgcc / libstdc++ 共 5~6 个 DLL），**不是单文件**。此处的
+  > 单文件 exe 是用同一份 v1.1.1 源码经 llvm-mingw(UCRT) 全静态交叉编译而来，行为一致。
+
+  **`bin/openFPGALoader/` 下两个二进制的来源/许可**（工位本地放置，不入库）：
+  - `openFPGALoader.exe`：本体 Apache-2.0（[trabucayre/openFPGALoader](https://github.com/trabucayre/openFPGALoader)
+    v1.1.1，**源码未改**）；静态链入 libusb-1.0 / libftdi1（LGPL-2.1）、zlib（Zlib 许可）。
+    构建：llvm-mingw(UCRT) 交叉工具链 + 项目自带 `Toolchain-x86_64-w64-mingw32-clang.cmake`
+    （`BUILD_STATIC=ON`、`WINDOWS_CROSSCOMPILE=ON`、`CROSS_COMPILE_DEPS=ON`，libftdi 加
+    `-DCMAKE_POLICY_VERSION_MINIMUM=3.5`、zlib 静态版另建）。LGPL 组件源码均为上游公开、
+    未改动，构建方式如上——满足"可重链/可复现"。
+  - `wdi-simple.exe`：libwdi 的 CLI 示例（[pbatard/libwdi](https://github.com/pbatard/libwdi)，
+    LGPL-3，**未改动**），从 Gowin USB Cable Driver 安装包（NSIS）提取。
 - **libusb 后端**：本工具用 pyusb 枚举 USB 设备（DFU/APP 检测、RECONFIG 切换）。
   - 推荐**把 `libusb-1.0.dll` 内置到 `resources/bin/`**——LGPL 允许随项目分发，工位免装依赖；
     工具会**优先加载这个内置 DLL**（见 `slogicpt/device_watch.libusb_backend`），`build.py`
@@ -174,15 +191,18 @@ GUI 顶栏"⚠ 警告"角标里的每一条都对应一个待放置/待确认项
   - 缺后端时 GUI 顶栏会**显式红字告警**"未找到 libusb 后端"，不再静默显示"无设备"。
 
 - **Linux 权限**：libusb 通常能枚举设备，但读序列号 / 发 DFU↔APP 的 RECONFIG 控制传输
-  需要访问权限。缺 udev 规则、且用户不在 `uucp`（Arch）或 `dialout`（Debian/Ubuntu）组时会
-  报 `LIBUSB_ERROR_ACCESS`。给 VID 0x359F 加一条 udev 规则：
+  需要访问权限。缺 udev 规则时会报 `LIBUSB_ERROR_ACCESS`。**推荐在 GUI「配置」页的
+  「环境准备」里点「部署」一键装好**（弹 polkit 授权，内部经 `pkexec` 写入下面的规则并
+  `udevadm reload`）；点「移除」即删除。也可手动：
   ```
   # /etc/udev/rules.d/60-sipeed-slogic.rules
-  SUBSYSTEM=="usb", ATTR{idVendor}=="359f", MODE="0660", GROUP="uucp", TAG+="uaccess"
-  # Debian/Ubuntu 改 GROUP="dialout"
+  SUBSYSTEM=="usb", ATTR{idVendor}=="359f", MODE="0660", TAG+="uaccess"
+  # openFPGALoader / Gowin 用的 FTDI 线缆
+  SUBSYSTEM=="usb", ATTR{idVendor}=="0403", ATTR{idProduct}=="6010", MODE="0660", TAG+="uaccess"
   sudo udevadm control --reload-rules && sudo udevadm trigger   # 之后重新插拔设备
   ```
-  （症状：设备能被检测到，但切换模式或读序列号报权限错误。）
+  （`TAG+="uaccess"` 让当前登录用户获得访问权，跨发行版通用；症状：设备能被检测到，
+  但切换模式或读序列号报权限错误。之后重新插拔设备生效。）
 
 ### Windows 工位放置清单
 

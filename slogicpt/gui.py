@@ -34,6 +34,7 @@ from PyQt5.QtWidgets import (
 )
 
 from . import device_watch
+from . import env_setup
 from . import pipeline as pipeline_mod
 from . import programmer
 from .device_watch import Mode
@@ -139,6 +140,7 @@ class ProductionTestGUI(QWidget):
     manual_switch_signal = pyqtSignal(str)
     finished_signal = pyqtSignal(bool, str)
     probe_signal = pyqtSignal(object)
+    env_signal = pyqtSignal(bool, str)   # (ok, action)  action in {deploy,remove}
 
     def __init__(self):
         super().__init__()
@@ -168,6 +170,8 @@ class ProductionTestGUI(QWidget):
         self.manual_switch_signal.connect(self._on_manual_switch)
         self.finished_signal.connect(self._on_finished)
         self.probe_signal.connect(self._on_probe)
+        self.env_signal.connect(self._on_env_done)
+        self._refresh_env_buttons()
 
         if not self.profiles:
             QMessageBox.critical(
@@ -314,23 +318,11 @@ class ProductionTestGUI(QWidget):
         self.expected_table.verticalHeader().setDefaultSectionSize(24)
         self.expected_table.verticalHeader().setFixedWidth(34)
         pv.addWidget(self.expected_table, 1)
-        # 资源路径覆盖：显示产品档案解析出的路径（placeholder），可临时改用别的文件
-        # （仅本次会话生效，不写回 TOML）。三项：app 固件 / DFU 镜像 / eFuse 密钥。
-        res_box = QGroupBox("资源路径覆盖（留空＝用产品档案；仅本次会话生效）")
-        res_grid = QGridLayout()
-        res_grid.setContentsMargins(6, 4, 6, 4)
-        res_grid.setVerticalSpacing(3)
-        self.fw_file_edit = self._add_resource_row(
-            res_grid, 0, "app 固件:", self.select_fw_file)
-        self.dfu_file_edit = self._add_resource_row(
-            res_grid, 1, "DFU 镜像:", self.select_dfu_file)
-        self.ekey_file_edit = self._add_resource_row(
-            res_grid, 2, "eFuse 密钥:", self.select_ekey_file)
-        res_grid.setColumnStretch(1, 1)
-        res_box.setLayout(res_grid)
-        pv.addWidget(res_box)
         param_page.setLayout(pv)
         self.tabs.addTab(param_page, "测试参数")
+
+        # tab 3: configuration -- resource-path overrides + one-time env prep
+        self.tabs.addTab(self._build_config_page(), "配置")
 
         # tab 3: session report
         report_page = QWidget(); rv = QVBoxLayout(); rv.setContentsMargins(4, 4, 4, 4)
@@ -346,6 +338,58 @@ class ProductionTestGUI(QWidget):
         report_page.setLayout(rv)
         self.tabs.addTab(report_page, "结果报告")
         return self.tabs
+
+    def _build_config_page(self) -> QWidget:
+        """配置页：资源路径覆盖 + 一次性环境准备（从测试参数页分出，避免堆叠）。"""
+        page = QWidget()
+        cv = QVBoxLayout(); cv.setContentsMargins(4, 4, 4, 4); cv.setSpacing(8)
+
+        # 资源路径覆盖：显示产品档案解析出的路径（placeholder），可临时改用别的文件
+        # （仅本次会话生效，不写回 TOML）。三项：app 固件 / DFU 镜像 / eFuse 密钥。
+        res_box = QGroupBox("资源路径覆盖（留空＝用产品档案；仅本次会话生效）")
+        res_grid = QGridLayout()
+        res_grid.setContentsMargins(6, 4, 6, 4)
+        res_grid.setVerticalSpacing(3)
+        self.fw_file_edit = self._add_resource_row(
+            res_grid, 0, "app 固件:", self.select_fw_file)
+        self.dfu_file_edit = self._add_resource_row(
+            res_grid, 1, "DFU 镜像:", self.select_dfu_file)
+        self.ekey_file_edit = self._add_resource_row(
+            res_grid, 2, "eFuse 密钥:", self.select_ekey_file)
+        res_grid.setColumnStretch(1, 1)
+        res_box.setLayout(res_grid)
+        cv.addWidget(res_box)
+
+        # 环境准备（一次性）：本平台的先决条件一键部署/移除——
+        # Linux=udev 设备权限；Windows=FTDI A 通道 WinUSB 驱动。其它平台隐藏。
+        if env_setup.requirement():
+            env_box = QGroupBox(f"环境准备（一次性）· {env_setup.title()}")
+            eg = QGridLayout(); eg.setContentsMargins(6, 4, 6, 4)
+            self.env_hint = QLabel(env_setup.hint())
+            self.env_hint.setWordWrap(True)
+            self.env_hint.setStyleSheet("color:#555;")
+            eg.addWidget(self.env_hint, 0, 0, 1, 2)
+            self.env_deploy_btn = QPushButton("部署")
+            self.env_deploy_btn.setStyleSheet(
+                "QPushButton { background:#2e7d32; color:white; font-weight:bold;"
+                " padding:4px 14px; border-radius:4px; }"
+                " QPushButton:disabled { background:#b8b8b8; }")
+            self.env_deploy_btn.clicked.connect(lambda: self._run_env_setup("deploy"))
+            self.env_remove_btn = QPushButton("移除")
+            self.env_remove_btn.setStyleSheet(
+                "QPushButton { padding:4px 14px; border-radius:4px; }"
+                " QPushButton:disabled { color:#999; }")
+            self.env_remove_btn.clicked.connect(lambda: self._run_env_setup("remove"))
+            eg.addWidget(self.env_deploy_btn, 1, 0)
+            eg.addWidget(self.env_remove_btn, 1, 1)
+            eg.setColumnStretch(0, 1)
+            eg.setColumnStretch(1, 1)
+            env_box.setLayout(eg)
+            cv.addWidget(env_box)
+
+        cv.addStretch(1)
+        page.setLayout(cv)
+        return page
 
     def _build_banner(self) -> QLabel:
         self.banner = QLabel("待机")
@@ -762,6 +806,60 @@ class ProductionTestGUI(QWidget):
             self.probe_signal.emit(res)
 
         threading.Thread(target=worker, daemon=True).start()
+
+    # ---------------------------------------------------- environment prep
+    def _run_env_setup(self, action: str):
+        """Deploy/remove the platform prerequisite (udev / WinUSB) off the UI
+        thread; both operations pop a system auth dialog (pkexec / UAC)."""
+        if not hasattr(self, "env_deploy_btn"):
+            return
+        self.env_deploy_btn.setEnabled(False)
+        self.env_remove_btn.setEnabled(False)
+        self.tabs.setCurrentIndex(0)          # surface the live log
+        # env logs stay ASCII/English on purpose: they interleave with output
+        # from Windows tools (pnputil/wdi) that we can't force into one locale.
+        self.log_signal.emit(
+            f"===== env setup: {action} ({env_setup.requirement()}) =====")
+
+        def worker():
+            try:
+                fn = env_setup.deploy if action == "deploy" else env_setup.remove
+                ok = fn(self.log_signal.emit)
+            except Exception as e:  # never let the worker die silently
+                self.log_signal.emit(f"[env] exception: {e}")
+                ok = False
+            self.env_signal.emit(ok, action)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_env_done(self, ok: bool, action: str):
+        self.log_signal.emit(f"env setup {action}: {'OK' if ok else 'FAILED'}")
+        self._refresh_env_buttons()
+        if ok:
+            self.refresh_device_status()      # permissions/driver may now differ
+
+    def _refresh_env_buttons(self):
+        """Enable/label deploy & cancel from the current prereq state.  On
+        Linux the rule file is directly checkable; on Windows the WinUSB
+        binding isn't cheaply queryable, so both stay enabled."""
+        if not hasattr(self, "env_deploy_btn"):
+            return
+        st = env_setup.status()
+        self.env_deploy_btn.setEnabled(True)
+        self.env_remove_btn.setEnabled(True)
+        if st == "deployed":
+            self.env_deploy_btn.setText("重新部署")
+            self.env_deploy_btn.setToolTip("规则已存在，可重新写入以更新")
+            self.env_remove_btn.setToolTip("移除已部署的规则")
+        elif st == "absent":
+            self.env_deploy_btn.setText("部署")
+            self.env_deploy_btn.setToolTip("")
+            self.env_remove_btn.setEnabled(False)
+            self.env_remove_btn.setToolTip("尚未部署，无需移除")
+        else:  # unknown (Windows)
+            self.env_deploy_btn.setText("部署")
+            self.env_deploy_btn.setToolTip("")
+            self.env_remove_btn.setToolTip("")
 
     def run_switch_mode(self):
         p = self.profile

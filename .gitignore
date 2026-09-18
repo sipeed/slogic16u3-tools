@@ -10,6 +10,8 @@ resources/bin/*
 # libusb-1.0.dll 可内置入库随项目分发（LGPL 允许）：Windows 工位免装依赖。
 # pyusb 会优先加载它（见 device_watch.libusb_backend）。放好后 git add -f 亦可。
 !resources/bin/libusb-1.0.dll
+# openFPGALoader/ 下的 openFPGALoader.exe 与 wdi-simple.exe 为工位本地放置，禁止入库
+# （来源/许可/构建见 resources/README.md）；由上面的 resources/bin/* 通配忽略。
 
 # 固件与工厂产测专用资源：只在工位本地放置，禁止入库/公开
 # 每产品目录 resources/products/<id>/：product.toml + programmer.toml 公开入库，
