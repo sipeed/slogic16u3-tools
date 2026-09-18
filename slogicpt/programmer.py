@@ -97,11 +97,20 @@ def _run_argv(argv: list[str], timeout_s: float,
               log_cb: Callable[[str], None],
               cancel: threading.Event | None) -> tuple[int, str]:
     """Run a full argv; return (returncode, combined stdout+stderr).
-    Output is also streamed to log_cb.  rc = -1 on launch failure/timeout/cancel."""
+    Output is also streamed to log_cb.  rc = -1 on launch failure/timeout/cancel.
+
+    从可执行文件自身所在目录运行（cwd = dirname(argv[0])）：Gowin 的
+    programmer_cli.exe 内嵌 Python 3.6 + Qt，其 qt.conf 写 `Prefix=.`、内嵌解释器
+    按**工作目录**装配 sys.path，因此必须以自身 bin 目录为 CWD 才能加载 MAINCMD
+    模块。打包 exe 默认 CWD 是 PyInstaller 目录，会报 "Error: MAINCMD module not
+    found."。传入的 image/输出路径均已 .resolve() 为绝对，改 CWD 不影响它们；对
+    openFPGALoader / AppImage 也无害（各自自包含）。"""
+    exe = Path(argv[0])
+    cwd = str(exe.parent) if exe.is_absolute() and exe.exists() else None
     try:
         proc = subprocess.Popen(
             argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, bufsize=1, **_popen_kwargs())
+            text=True, bufsize=1, cwd=cwd, **_popen_kwargs())
     except OSError as e:
         log_cb(f"[programmer] 启动失败: {e}")
         return -1, ""
