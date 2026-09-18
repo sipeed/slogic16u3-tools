@@ -1,0 +1,114 @@
+name: Build portable release bundles
+
+# Triggered by pushing a semver tag such as v1.2.3 or v1.2.3-rc1 (this also
+# fires when a GitHub Release is published, since that creates the tag).
+# Builds the PyInstaller binary on native runners (PyInstaller cannot
+# cross-compile), lays it out next to the repo's resources/ directory exactly
+# as build.py documents, zips each platform bundle, and attaches both zips to
+# the Release for that tag.
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+*'
+
+# gh release create/upload needs write access to the repo's releases.
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.label }} bundle
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            label: Linux
+            binary: slogic-pt-linux-x86_64
+          - os: windows-latest
+            label: Win
+            binary: slogic-pt-windows-x86_64.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # build.py requires Python 3.11+ (the app imports stdlib tomllib).
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      # Produces dist/<binary>. On Windows the committed resources/bin/
+      # libusb-1.0.dll is auto-bundled into the exe by build.py.
+      - name: Build binary
+        run: python build.py
+
+      # Lay out binary + resources/ in one folder (the distribution layout from
+      # build.py / resources/README.md). resources/ is copied verbatim from the
+      # checkout; firmware & eFuse keys are gitignored and thus never present.
+      - name: Assemble portable bundle
+        shell: bash
+        run: |
+          stage="slogic-pt-${GITHUB_REF_NAME}-portable-${{ matrix.label }}"
+          mkdir "$stage"
+          cp "dist/${{ matrix.binary }}" "$stage/"
+          cp -r resources "$stage/resources"
+          echo "STAGE=$stage" >> "$GITHUB_ENV"
+
+      - name: Zip bundle (Linux)
+        if: runner.os == 'Linux'
+        run: zip -r "${STAGE}.zip" "${STAGE}"
+
+      - name: Zip bundle (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path "$env:STAGE" -DestinationPath "$env:STAGE.zip"
+
+      - name: Upload bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: portable-${{ matrix.label }}
+          path: ${{ env.STAGE }}.zip
+          if-no-files-found: error
+
+  release:
+    name: Attach bundles to the Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download built bundles
+        uses: actions/download-artifact@v4
+        with:
+          pattern: portable-*
+          merge-multiple: true
+          path: bundles
+
+      # Create the Release for this tag and upload both zips. If the Release
+      # already exists (e.g. it was published from the GitHub UI, which created
+      # the tag), fall back to uploading the assets onto it.
+      - name: Publish bundles to the Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          prerelease=""
+          case "${GITHUB_REF_NAME}" in *-*) prerelease="--prerelease";; esac
+          if ! gh release create "${GITHUB_REF_NAME}" \
+                --repo "${GITHUB_REPOSITORY}" \
+                --title "${GITHUB_REF_NAME}" \
+                --notes "Automated portable bundles for ${GITHUB_REF_NAME} (Linux + Windows). Drop in platform tools (sigrok-cli / Gowin Programmer / openFPGALoader) and firmware per resources/README.md." \
+                ${prerelease} \
+                bundles/*.zip; then
+            echo "Release already exists; uploading assets instead."
+            gh release upload "${GITHUB_REF_NAME}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --clobber \
+              bundles/*.zip
+          fi
