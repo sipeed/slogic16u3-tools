@@ -19,6 +19,7 @@ import os
 import platform
 import re
 import subprocess
+import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -70,8 +71,32 @@ def _popen_kwargs() -> dict:
         kwargs["start_new_session"] = True   # own process group, see kill_tree
     env = os.environ.copy()
     env.setdefault("APPIMAGE_EXTRACT_AND_RUN", "1")   # FUSE-less fallback
+    _strip_pyinstaller_env(env)
     kwargs["env"] = env
     return kwargs
+
+
+def _strip_pyinstaller_env(env: dict) -> None:
+    """When we run frozen (PyInstaller onefile), the bootloader injects
+    _PYI_* / _MEIPASS2 markers into the environment and points LD_LIBRARY_PATH
+    at our extraction dir.  Hand every external tool a clean environment so it
+    resolves its own libraries, not ours.  No-op from source
+    (getattr(sys, "frozen") is False), so behaviour there is unchanged.
+
+    NB: this does NOT cure Gowin programmer_cli's "MAINCMD module not found"
+    when frozen -- that is an ancestry problem, not an environment one, and is
+    fixed by re-parenting the tool via WMI (see winexec.py)."""
+    if not getattr(sys, "frozen", False):
+        return
+    for k in [k for k in env if k.startswith("_PYI_") or k == "_MEIPASS2"]:
+        del env[k]
+    # PyInstaller overrode these and saved the originals as <VAR>_ORIG
+    for var in ("LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH", "DYLD_FRAMEWORK_PATH"):
+        orig = env.pop(var + "_ORIG", None)
+        if orig is not None:
+            env[var] = orig
+        else:
+            env.pop(var, None)
 
 
 def kill_tree(proc: subprocess.Popen) -> None:

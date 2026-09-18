@@ -26,6 +26,7 @@ from typing import Callable, Literal
 from .i18n import t
 from .profiles import Programmer
 from .sigrok import _popen_kwargs, watchdog
+from .winexec import needs_reparent, run_reparented
 
 EFuse = Literal["locked", "unlocked", "unknown"]
 
@@ -100,14 +101,18 @@ def _run_argv(argv: list[str], timeout_s: float,
     """Run a full argv; return (returncode, combined stdout+stderr).
     Output is also streamed to log_cb.  rc = -1 on launch failure/timeout/cancel.
 
-    从可执行文件自身所在目录运行（cwd = dirname(argv[0])）：Gowin 的
-    programmer_cli.exe 内嵌 Python 3.6 + Qt，其 qt.conf 写 `Prefix=.`、内嵌解释器
-    按**工作目录**装配 sys.path，因此必须以自身 bin 目录为 CWD 才能加载 MAINCMD
-    模块。打包 exe 默认 CWD 是 PyInstaller 目录，会报 "Error: MAINCMD module not
-    found."。传入的 image/输出路径均已 .resolve() 为绝对，改 CWD 不影响它们；对
-    openFPGALoader / AppImage 也无害（各自自包含）。"""
+    以可执行文件自身所在目录为 CWD 运行（cwd = dirname(argv[0])）：Gowin 的
+    programmer_cli.exe 内嵌 Python 3.6 + Qt，需以自身 bin 目录为工作目录装配
+    qt.conf/DLL。传入的 image/输出路径均已 .resolve() 为绝对，改 CWD 不影响它们；
+    对 openFPGALoader / AppImage 也无害（各自自包含）。
+
+    打包（PyInstaller frozen）后必须经 WMI 重定父到 wmiprvse 服务再启动外部工具，
+    否则 programmer_cli 只要祖先链里有 frozen 进程就报 "Error: MAINCMD module not
+    found."（详见 winexec.py）。源码运行与非 Windows 不受影响，走普通 subprocess。"""
     exe = Path(argv[0])
     cwd = str(exe.parent) if exe.is_absolute() and exe.exists() else None
+    if needs_reparent():
+        return run_reparented(argv, cwd, timeout_s, log_cb, cancel)
     try:
         proc = subprocess.Popen(
             argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
