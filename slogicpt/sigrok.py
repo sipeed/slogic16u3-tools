@@ -73,6 +73,12 @@ def _popen_kwargs() -> dict:
     env.setdefault("APPIMAGE_EXTRACT_AND_RUN", "1")   # FUSE-less fallback
     _strip_pyinstaller_env(env)
     kwargs["env"] = env
+    # The tools emit ASCII/UTF-8 log lines, but text=True alone decodes with the
+    # locale codec -- on a Chinese Windows that is GBK, and a single non-GBK byte
+    # in the output raises UnicodeDecodeError mid-capture.  Decode as UTF-8 and
+    # replace undecodable bytes so a stray byte never aborts a run.
+    kwargs["encoding"] = "utf-8"
+    kwargs["errors"] = "replace"
     return kwargs
 
 
