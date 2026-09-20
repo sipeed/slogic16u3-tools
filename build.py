@@ -21,6 +21,15 @@ import subprocess
 import sys
 from pathlib import Path
 
+# CI and legacy Windows consoles default to a code page (e.g. cp1252) that can't
+# encode our Chinese status lines, which would abort the build on print() even
+# after the binary built fine.  Force UTF-8 so output never crashes the build.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
 REPO = Path(__file__).resolve().parent
 
 NAME_BY_PLATFORM = {
