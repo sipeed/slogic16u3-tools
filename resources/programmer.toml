@@ -43,8 +43,12 @@ timeout_s = 600                    # 烧录专用看门狗：顶层 timeout_s=30
 # 前置（一次性）：FTDI A 通道需 WinUSB 驱动 ——
 #   Downloads\wdi-simple.exe -v 0x0403 -p 0x6010 -i 0 -t 0 -n "USB Serial Converter A (WinUSB)"
 # （装完 Gowin 探测/eFuse 自动改走 cable-index 5；删掉下行即回退 Gowin 慢速烧录。）
+# --verify 强制回读校验：产线二供 flash 型号常不在 openFPGALoader 的 JEDEC 表里
+# （回显 "flash chip unknown"），此时它即使擦+写全过也会硬返回非零退出码，故不能只
+# 认退出码。带 --verify 后它回读比对（Reading→Done），programmer.py 的
+# _openfpga_flash_ok 以"校验通过"为准判成功，既解掉误判、又不放行没写对的板。
 argv_windows = ["bin/openFPGALoader/openFPGALoader.exe", "-c", "ft2232",
-                "--external-flash", "-o", "{spiaddr}", "{image}"]
+                "--external-flash", "--verify", "-o", "{spiaddr}", "{image}"]
 # run 默认 54 = exFlash Erase,Program,Verify Arora V（--fsFile 通吃 .fs/.bin 位流）；
 # 切勿用 55/56（那是 RISC-V "C Bin"，烧位流会写 0 字节）。
 

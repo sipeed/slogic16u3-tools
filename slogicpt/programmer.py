@@ -93,6 +93,33 @@ def _write_ok(rc: int, out: str) -> bool:
     return rc == 0 and ("finished" in low or "success" in low)
 
 
+# openFPGALoader failure markers -- benign blank-flash output ("flash chip
+# unknown: use basic protection detection", Erasing/Writing/Reading/Done) has
+# none of these; a verify mismatch or any hard failure prints "Error:"/"fail".
+_OFL_FAIL_MARKERS = ("error", "fail", "mismatch")
+
+
+def _openfpga_flash_ok(rc: int, out: str) -> bool:
+    """openFPGALoader blank-flash succeeded.
+
+    On a flash chip whose JEDEC id it does not recognise ("flash chip unknown")
+    openFPGALoader still erases, writes and -- with --verify -- reads the data
+    back and matches it, printing "Done", yet EXITS NON-ZERO.  So trust the
+    read-back verify here, not rc.  A completed --verify prints "Verifying
+    write..." then a trailing "Done"; require that Done to appear AFTER the
+    verify banner, so a killed/truncated verify (no trailing Done) is never
+    taken for success -- this is what keeps an unverified board from passing.
+    argv_windows must pass --verify for that branch to engage (see
+    resources/programmer.toml); without it we fall back to a clean exit code."""
+    low = out.lower()
+    if any(m in low for m in _OFL_FAIL_MARKERS):
+        return False
+    vpos = low.find("verifying write")
+    if vpos != -1 and "done" in low[vpos:]:
+        return True
+    return rc == 0
+
+
 # --- subprocess -------------------------------------------------------------
 
 def _run_argv(argv: list[str], timeout_s: float,
@@ -212,8 +239,7 @@ def flash(prog: Programmer, cable_index: int | None = None,
         log_cb("[flash] " + t("Blank-flash (custom command, watchdog {secs}s): ").format(secs=f"{op.timeout_s:.0f}")
                + ' '.join(argv))
         rc, out = _run_argv(argv, op.timeout_s, log_cb, cancel)
-        low = out.lower()
-        ok = rc == 0 and "error" not in low and "fail" not in low
+        ok = _openfpga_flash_ok(rc, out)
         log_cb("[flash] " + (t("flash complete") if ok else t("flash failed")))
         return ok
     if not prog.cli:
@@ -346,4 +372,20 @@ if __name__ == "__main__":
     assert _write_ok(0, flash_bad) is False
     assert _write_ok(0, flash_bad2) is False      # Error:+Finished 同现 -> 失败
     assert _write_ok(1, flash_ok) is False        # nonzero rc, even with "Finished"
-    print("programmer 解析自测 PASS（online / locked / unlocked / 未连接 / 烧录成败）")
+    # openFPGALoader 烧空板：未识别 flash 上擦+写+校验全过却硬返回非零码（同事实测），
+    # 故以 "Verifying write" 后出现 Done（回读通过）为准，不认退出码；校验被截断或
+    # 不符时绝不放行，防止没真正写对的板流过产测。
+    ofl_ok = ("flash chip unknown: use basic protection detection\n"
+              "Writing: [==================================================] 100.00%\nDone\n"
+              "Verifying write (May take time)\n"
+              "Reading: [==================================================] 100.00%\nDone")
+    ofl_killed = ("Writing: [====] 100.00%\nDone\n"
+                  "Verifying write (May take time)\nReading: [======      ] 42.00%")
+    ofl_mismatch = ofl_ok + "\nError: Verification failed at 0x0"
+    ofl_no_verify = "Erasing: [====] 100.00%\nDone\nWriting: [====] 100.00%\nDone"
+    assert _openfpga_flash_ok(1, ofl_ok) is True        # 非零码但回读通过 -> 成功
+    assert _openfpga_flash_ok(-1, ofl_killed) is False  # 校验被截断（无 Done）-> 失败
+    assert _openfpga_flash_ok(1, ofl_mismatch) is False # 校验不符（Error）-> 失败
+    assert _openfpga_flash_ok(0, ofl_no_verify) is True # 无 --verify 时回退认 rc==0
+    assert _openfpga_flash_ok(1, ofl_no_verify) is False
+    print("programmer 解析自测 PASS（online / locked / unlocked / 未连接 / 烧录成败 / openFPGALoader 校验）")
