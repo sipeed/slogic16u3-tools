@@ -7,12 +7,13 @@ files -- no wrapper shell scripts:
   probe / read device  <cli> --device D --cable-index c --run 0
   eFuse read (lock bit) <cli> --device D --cable-index c --keyread
   blank flash           <cli> --device D --cable-index c --run <run> --fsFile <image> --spiaddr <addr>
-  eFuse write + lock    <cli> --device D --cable-index c --keywritefile --keyFile <key> --keylock
+  eFuse write + lock    <cli> --device D --cable-index c --keywritefile --keyFile <key>
   DFU<->APP fallback    <cli> --device D --cable-index c <programmer.switch args>
 
 probe() and eFuse read are read-only.  flash() and efuse_lock() write the
 chip; the GUI gates them behind a successful probe (which supplies the
-cable index).  eFuse write+lock is irreversible.
+cable index).  eFuse write+lock is irreversible; --keywritefile locks the
+key automatically, so no separate --keylock command is needed.
 """
 from __future__ import annotations
 
@@ -326,7 +327,8 @@ def efuse_lock(prog: Programmer, cable_index: int | None = None,
                key_file: Path | None = None,
                log_cb: Callable[[str], None] = print,
                cancel: threading.Event | None = None) -> bool:
-    """Write the AES key eFuse and lock it (IRREVERSIBLE).
+    """Write the AES key into eFuse and lock it (IRREVERSIBLE).  --keywritefile
+    locks the key automatically, so no separate --keylock command is issued.
     `key_file` 覆盖 prog.efuse_key_file（GUI 会话级资源路径覆盖）。"""
     if not prog.cli:
         log_cb("[efuse] " + t("Programmer CLI not found; cannot write-lock"))
@@ -344,11 +346,11 @@ def efuse_lock(prog: Programmer, cable_index: int | None = None,
         return False
     log_cb("[efuse] " + t("Writing and locking AES key (irreversible): device={device} "
            "cable-index={cable} keyFile={keyfile}").format(device=prog.device, cable=cable, keyfile=key.name))
+    # --keywritefile 写入即自动锁定，无需再单独 --keylock。
     # 写操作看门狗下限：不可逆操作中途被杀风险最大，宁可多等
     rc, out = _run(prog, [*_cable_args(prog.device, cable),
-                          "--keywritefile", "--keyFile", str(key),
-                          "--keylock"], log_cb, cancel,
-                   timeout_s=max(prog.timeout_s, 120))
+                          "--keywritefile", "--keyFile", str(key)],
+                   log_cb, cancel, timeout_s=max(prog.timeout_s, 120))
     ok = _write_ok(rc, out)
     log_cb("[efuse] " + (t("write-lock complete (key written and locked)") if ok else t("write-lock failed")))
     return ok
