@@ -690,9 +690,9 @@ class ProductionTestGUI(QWidget):
             return
         mine = next((d for d in self.detected
                      if p is not None and d.profile.id == p.id), None)
-        # the DFU pid is shared across products, so one physical DFU
-        # device matches several profiles -- list it once, and name it
-        # "SLogic DFU" when the product can't be told apart
+        # dfu_pid is per-product now (16U3=0x30F1, 32U3=0x30F2), so a DFU
+        # device usually resolves to one profile; only if several products
+        # still share a dfu_pid is it ambiguous -- then name it "SLogic DFU"
         shared_dfu = {k for k, n in Counter(
             (q.vid, q.dfu_pid) for q in self.profiles
             if q.dfu_pid is not None).items() if n > 1}

@@ -8,7 +8,7 @@ display_name = "SLogic32U3"
 [usb]
 vid = 0x359F
 app_pid = 0x3032
-dfu_pid = 0x30F1   # "SLogic DFU"，与 16U3 共用（DFU 模式不区分产品型号，dmesg 实测确认）
+dfu_pid = 0x30F2   # 32U3 专用 DFU PID，与 16U3 的 0x30F1 区分（此前固件共用 0x30F1，现已分开）
 
 [capture]
 driver = "sipeed-slogic-analyzer"

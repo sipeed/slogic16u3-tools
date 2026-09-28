@@ -485,9 +485,10 @@ def load_profiles(products_dir: Path = PRODUCTS_DIR) -> tuple[list[ProductProfil
         problems.extend(probs)
         if profile is not None:
             profiles.append(profile)
-    # app_pid must be unique (it identifies the product); dfu_pid MAY be
-    # shared across products -- DFU mode ("SLogic DFU", 0x30F1) is
-    # product-agnostic by design
+    # app_pid must be unique (it identifies the product).  dfu_pid is normally
+    # per-product too (16U3=0x30F1, 32U3=0x30F2), but the check still tolerates
+    # products sharing one dfu_pid; it only errors when an app_pid collides with
+    # some product's dfu_pid.
     app_seen: dict[tuple[int, int], str] = {}
     dfu_pids = {(p.vid, p.dfu_pid): p.id for p in profiles if p.dfu_pid is not None}
     for p in profiles:

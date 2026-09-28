@@ -10,7 +10,7 @@ display_name = "SLogic16U3"
 [usb]
 vid = 0x359F
 app_pid = 0x3031             # 应用固件运行时的 PID
-dfu_pid = 0x30F1             # "SLogic DFU"，各产品共用（DFU 不区分型号）；未知时删除本行，GUI 提示 "DFU 未配置"
+dfu_pid = 0x30F1             # 16U3 DFU PID（32U3 用 0x30F2 区分）；未知时删除本行，GUI 提示 "DFU 未配置"
 
 [capture]
 driver = "sipeed-slogic-analyzer"   # sigrok 驱动名
