@@ -272,6 +272,9 @@ class Pipeline:
             prog, self._cable_index, log_cb=self._log, cancel=self.cancel)
         if cable is not None:
             self._cable_index = cable   # 后续烧写步骤复用同一 cable
+        self._log(f"[criteria] eFuse: pre-state={state}; rule: locked->skip, "
+                  f"unlocked->write+lock, unknown->abort; "
+                  f"success = readback state == locked (expect Device Locked)")
         if state == "locked":
             self._log(t("eFuse already locked (key written), skipping write-lock"))
             self.report_lines.append(
@@ -295,6 +298,8 @@ class Pipeline:
         state2, _ = programmer_mod.efuse_state(
             prog, self._cable_index, log_cb=self._log, cancel=self.cancel)
         ok = state2 == "locked"
+        self._log(f"[criteria] eFuse readback: got={state2}, expect=locked "
+                  f"-> {'OK' if ok else 'FAIL'}")
         self.report_lines.append(
             t("eFuse write-lock") + ": "
             + ("OK" + t(" (readback confirmed locked)") if ok
@@ -306,6 +311,9 @@ class Pipeline:
     def _flash_blank(self) -> bool:
         op = self.profile.programmer.flash
         img = self._image_override if self._image_override is not None else op.image
+        self._log(f"[criteria] blank-flash: image={img.name} @ {op.spiaddr:#x}; "
+                  f"success = openFPGALoader read-back verify OK (see its decision "
+                  f"line), or Gowin 'Finished' with no Error")
         ok = programmer_mod.flash(
             self.profile.programmer, self._cable_index, image=self._image_override,
             log_cb=self._log, cancel=self.cancel)
@@ -317,6 +325,9 @@ class Pipeline:
     def _wait_mode(self, pid: int, timeout_s: float, what: str) -> bool:
         self._log(t("Waiting for {what} device ({vid}:{pid})...").format(
             what=what, vid=f"{self.profile.vid:#06x}", pid=f"{pid:#06x}"))
+        self._log(f"[criteria] wait {what}: success = USB "
+                  f"{self.profile.vid:#06x}:{pid:#06x} enumerated within "
+                  f"{timeout_s:.0f}s (then prompt+poll until replugged)")
 
         def ready(manual: bool) -> bool:
             self._log(t("{what} device ready").format(what=what)
@@ -419,6 +430,11 @@ class Pipeline:
         if fw is None or self.profile.dfu_pid is None:
             self._log(t("Firmware or dfu_pid not configured, cannot flash"))
             return False
+        self._log(f"[criteria] DFU flash: target {self.profile.vid:#06x}:"
+                  f"{self.profile.dfu_pid:#06x} @ {self.profile.app_flash_addr:#x}; "
+                  f"success = no USB/DFU error"
+                  + (", read-back verify on" if self.profile.verify_after_flash
+                     else ", verify OFF"))
         try:
             flasher.flash_app_firmware(
                 vid=self.profile.vid, pid=self.profile.dfu_pid,
@@ -486,6 +502,7 @@ class Pipeline:
             ok, verdicts = waveform.verify_channels(
                 chans, samplerate_hz, e.freq_hz, e.duty_pct,
                 e.freq_tol_pct, e.duty_tol_pp)
+            exp_per_ch = [(e.freq_hz, e.duty_pct)] * len(verdicts)
         else:
             verdicts = []
             for ch in range(channels):
@@ -495,11 +512,19 @@ class Pipeline:
                     e.freq_tol_pct, e.duty_tol_pp)
                 verdicts.append(waveform.ChannelVerdict(
                     ch, v[0].freq_hz, v[0].duty, v[0].freq_ok, v[0].duty_ok))
+            exp_per_ch = [expected_rows[ch] for ch in range(channels)]
             ok = all(v.ok for v in verdicts)
-        for v in verdicts:
+        # 判据：每通道 freq 在 ±freq_tol_pct%、duty 在 ±duty_tol_pp 之内即过；
+        # 逐通道打出 实测 vs 期望 + freq/duty 各自过没过，便于分辨误判/超差。
+        self._log(f"[criteria] verify: freq within +/-{e.freq_tol_pct}% of "
+                  f"expected, duty within +/-{e.duty_tol_pp}pp of expected")
+        for v, (exp_f, exp_d) in zip(verdicts, exp_per_ch):
             f = f"{v.freq_hz / 1e6:.4f}MHz" if v.freq_hz else "N/A"
             d = f"{v.duty * 100:.2f}%" if v.duty is not None else "N/A"
-            self._log(f"  CH{v.channel}: freq={f} duty={d} {'ok' if v.ok else '** FAIL **'}")
+            self._log(
+                f"  CH{v.channel}: freq={f}[exp {exp_f / 1e6:.4f}MHz "
+                f"{'ok' if v.freq_ok else 'FAIL'}] duty={d}[exp {exp_d:.1f}% "
+                f"{'ok' if v.duty_ok else 'FAIL'}] -> {'ok' if v.ok else '** FAIL **'}")
         self.report_lines.append(
             f"{label}: {'PASS' if ok else 'FAIL'} ("
             + t("{n}/{total} channels passed").format(

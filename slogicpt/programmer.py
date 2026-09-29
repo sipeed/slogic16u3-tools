@@ -292,6 +292,11 @@ def flash(prog: Programmer, cable_index: int | None = None,
                           "--spiaddr", f"{op.spiaddr:#08x}"], log_cb, cancel,
                    timeout_s=op.timeout_s)
     ok = _write_ok(rc, out)
+    low = out.lower()
+    fm = next((m for m in _WRITE_FAIL_MARKERS if m in low), "none")
+    log_cb("[flash] " + (f"decision: rc={rc}, finished/success present="
+           f"{'finished' in low or 'success' in low}, fail_marker={fm} "
+           f"-> {'OK' if ok else 'FAIL'}"))
     log_cb("[flash] " + (t("flash complete") if ok else t("flash failed")))
     return ok
 
@@ -334,6 +339,11 @@ def switch(prog: Programmer, direction: str, cable_index: int | None = None,
     rc, out = _run(prog, [*_cable_args(prog.device, cable), *args],
                    log_cb, cancel, timeout_s=max(prog.timeout_s, 300))
     ok = _write_ok(rc, out)
+    low = out.lower()
+    fm = next((m for m in _WRITE_FAIL_MARKERS if m in low), "none")
+    log_cb("[switch] " + (f"decision: rc={rc}, finished/success present="
+           f"{'finished' in low or 'success' in low}, fail_marker={fm} "
+           f"-> {'OK' if ok else 'FAIL'} (real readiness = next wait step)"))
     log_cb("[switch] " + (t("switch command complete") if ok else t("switch command failed")))
     return ok
 
@@ -367,6 +377,11 @@ def efuse_lock(prog: Programmer, cable_index: int | None = None,
                           "--keywritefile", "--keyFile", str(key)],
                    log_cb, cancel, timeout_s=max(prog.timeout_s, 120))
     ok = _efuse_write_ok(rc, out)
+    low = out.lower()
+    fm = next((m for m in _WRITE_FAIL_MARKERS if m in low), "none")
+    log_cb("[efuse] " + (f"decision: rc={rc} (ignored), "
+           f"'locked success' present={'locked success' in low}, "
+           f"fail_marker={fm} -> {'OK' if ok else 'FAIL'}"))
     log_cb("[efuse] " + (t("write-lock complete (key written and locked)") if ok else t("write-lock failed")))
     return ok
 
