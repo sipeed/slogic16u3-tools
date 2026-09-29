@@ -518,13 +518,19 @@ class Pipeline:
         # 逐通道打出 实测 vs 期望 + freq/duty 各自过没过，便于分辨误判/超差。
         self._log(f"[criteria] verify: freq within +/-{e.freq_tol_pct}% of "
                   f"expected, duty within +/-{e.duty_tol_pp}pp of expected")
-        for v, (exp_f, exp_d) in zip(verdicts, exp_per_ch):
+        for i, (v, (exp_f, exp_d)) in enumerate(zip(verdicts, exp_per_ch)):
             f = f"{v.freq_hz / 1e6:.4f}MHz" if v.freq_hz else "N/A"
             d = f"{v.duty * 100:.2f}%" if v.duty is not None else "N/A"
+            fv = "ok  " if v.freq_ok else "FAIL"
+            dv = "ok  " if v.duty_ok else "FAIL"
+            # Dxx 补零两位（冒号对齐）+ 各列定宽，便于肉眼比对实测 vs 期望
             self._log(
-                f"  CH{v.channel}: freq={f}[exp {exp_f / 1e6:.4f}MHz "
-                f"{'ok' if v.freq_ok else 'FAIL'}] duty={d}[exp {exp_d:.1f}% "
-                f"{'ok' if v.duty_ok else 'FAIL'}] -> {'ok' if v.ok else '** FAIL **'}")
+                f"  D{v.channel:02d}: freq={f:>11}[exp {exp_f / 1e6:8.4f}MHz {fv}]  "
+                f"duty={d:>7}[exp {exp_d:5.1f}% {dv}]  -> "
+                f"{'ok' if v.ok else '** FAIL **'}")
+            # 每 8 通道插一条横线分割，便于分组观察（最后一组末尾不加）
+            if (i + 1) % 8 == 0 and (i + 1) < len(verdicts):
+                self._log("  " + "-" * 74)
         self.report_lines.append(
             f"{label}: {'PASS' if ok else 'FAIL'} ("
             + t("{n}/{total} channels passed").format(
