@@ -109,10 +109,15 @@ def _efuse_write_ok(rc: int, out: str) -> bool:
     return "locked success" in low or "success" in low
 
 
-# openFPGALoader failure markers -- benign blank-flash output ("flash chip
-# unknown: use basic protection detection", Erasing/Writing/Reading/Done) has
-# none of these; a verify mismatch or any hard failure prints "Error:"/"fail".
-_OFL_FAIL_MARKERS = ("error", "fail", "mismatch")
+# openFPGALoader failure markers, matched ONLY within the verify phase (after
+# "Verifying write").  They must NOT be matched over the whole output: the
+# pre-flash status-register dump on GW5AT-60B prints benign bit-labels
+# ("auto_boot_1st_fail", "auto_boot_2nd_fail", "Timeout", ...) that contain
+# "fail" and would otherwise be misread as a failure.
+_OFL_VERIFY_FAIL = ("error", "fail", "mismatch", "wrong")
+# Narrow whole-output markers for the no-verify fallback only (bare "fail"/
+# "error" would hit the benign status bit-labels, so use specific phrases).
+_OFL_HARD_FAIL = ("error:", "mismatch", "aborted", "failed to")
 
 
 def _openfpga_flash_ok(rc: int, out: str) -> tuple[bool, str]:
@@ -120,26 +125,30 @@ def _openfpga_flash_ok(rc: int, out: str) -> tuple[bool, str]:
 
     On a flash chip whose JEDEC id it does not recognise ("flash chip unknown")
     openFPGALoader still erases, writes and -- with --verify -- reads the data
-    back and matches it, printing "Done", yet EXITS NON-ZERO.  So trust the
-    read-back verify here, not rc.  A completed --verify prints "Verifying
-    write..." then a trailing "Done"; require that Done to appear AFTER the
-    verify banner, so a killed/truncated verify (no trailing Done) is never
-    taken for success -- this is what keeps an unverified board from passing.
-    argv_windows must pass --verify for that branch to engage (see
-    resources/programmer.toml); without it we fall back to a clean exit code."""
+    back, printing "Done", yet EXITS NON-ZERO.  So trust the read-back verify,
+    not rc.  Judge by the VERIFY PHASE only: a completed --verify prints
+    "Verifying write..." then a trailing "Done"; a mismatch prints error/fail in
+    that same phase.  The failure scan is scoped to the text AFTER "Verifying
+    write" on purpose -- the pre-flash status dump (GW5AT-60B) has benign
+    bit-labels like "auto_boot_1st_fail"/"Timeout" that must not be read as
+    failures.  Without a --verify banner we fall back to a NARROW whole-output
+    error check plus a clean exit code (see resources/programmer.toml)."""
     low = out.lower()
-    hit = next((m for m in _OFL_FAIL_MARKERS if m in low), None)
-    if hit is not None:
-        return False, f'rejected: failure marker "{hit}" present in tool output'
     vpos = low.find("verifying write")
-    if vpos != -1 and "done" in low[vpos:]:
-        return True, "read-back verify matched (saw 'Verifying write' then 'Done'); exit code ignored"
     if vpos != -1:
-        return False, (f"'Verifying write' seen but no trailing 'Done' "
-                       f"(verify truncated/killed); rc={rc}")
+        tail = low[vpos:]
+        bad = next((m for m in _OFL_VERIFY_FAIL if m in tail), None)
+        if bad is not None:
+            return False, f'verify phase reported "{bad}"'
+        if "done" in tail:
+            return True, "read-back verify matched (Verifying write -> Done); exit code ignored"
+        return False, "verify started but did not finish (no trailing Done -- killed/truncated?)"
+    bad = next((m for m in _OFL_HARD_FAIL if m in low), None)
+    if bad is not None:
+        return False, f'failure marker "{bad}" present (no --verify read-back seen)'
     if rc == 0:
         return True, "no --verify read-back in output; trusting clean exit rc=0"
-    return False, f"no read-back verify in output (is --verify set?) and rc={rc} != 0"
+    return False, f"no --verify read-back in output and rc={rc} != 0"
 
 
 # --- subprocess -------------------------------------------------------------
@@ -263,14 +272,20 @@ def flash(prog: Programmer, cable_index: int | None = None,
         rc, out = _run_argv(argv, op.timeout_s, log_cb, cancel)
         ok, why = _openfpga_flash_ok(rc, out)
         # 打印判据前提，便于现场定位"进度条满却判失败"：rc 是之前看不到的关键值。
+        # fail_marker 只在 verify 阶段(或无 verify 时用收窄标记)里找，避免命中
+        # flash 前状态转储里的良性位名 auto_boot_1st_fail 等。
         low = out.lower()
         vpos = low.find("verifying write")
-        fm = next((m for m in _OFL_FAIL_MARKERS if m in low), "none")
+        if vpos != -1:
+            fm = next((m for m in _OFL_VERIFY_FAIL if m in low[vpos:]), "none")
+        else:
+            fm = next((m for m in _OFL_HARD_FAIL if m in low), "none")
         log_cb("[flash] " + (f"decision: rc={rc}  verify_seen={vpos != -1}  "
                f"verify_done={vpos != -1 and 'done' in low[vpos:]}  "
                f"fail_marker={fm}  argv_has_verify={'--verify' in argv}"))
         if fm != "none":
-            bad = next((ln.strip() for ln in out.splitlines() if fm in ln.lower()), "")
+            hay = out[vpos:] if vpos != -1 else out
+            bad = next((ln.strip() for ln in hay.splitlines() if fm in ln.lower()), "")
             log_cb("[flash] " + f"  -> fail_marker line: {bad}")
         log_cb("[flash] " + f"verdict: {'OK' if ok else 'FAIL'} -- {why}")
         log_cb("[flash] " + (t("flash complete") if ok else t("flash failed")))
@@ -442,9 +457,18 @@ if __name__ == "__main__":
                   "Verifying write (May take time)\nReading: [======      ] 42.00%")
     ofl_mismatch = ofl_ok + "\nError: Verification failed at 0x0"
     ofl_no_verify = "Erasing: [====] 100.00%\nDone\nWriting: [====] 100.00%\nDone"
+    # 32U3(GW5AT-60B) 烧录前 displayReadReg 会打印状态位名 auto_boot_1st_fail /
+    # auto_boot_2nd_fail / Timeout —— 含 "fail"，绝不能被当失败标记（实测 v0.1.5 误判）
+    ofl_32u3 = ("after program flash: displayReadReg 16020238\n"
+                "   [ 3] Timeout\n   [ 4] auto_boot_2nd_fail\n"
+                "   [ 9] auto_boot_1st_fail\n"
+                "flash chip unknown: use basic protection detection\n"
+                "Erasing: [====] 100.00%\nDone\nWriting: [====] 100.00%\nDone\n"
+                "Verifying write (May take time)\nReading: [====] 100.00%\nDone")
     assert _openfpga_flash_ok(1, ofl_ok)[0] is True        # 非零码但回读通过 -> 成功
     assert _openfpga_flash_ok(-1, ofl_killed)[0] is False  # 校验被截断（无 Done）-> 失败
     assert _openfpga_flash_ok(1, ofl_mismatch)[0] is False # 校验不符（Error）-> 失败
     assert _openfpga_flash_ok(0, ofl_no_verify)[0] is True # 无 --verify 时回退认 rc==0
     assert _openfpga_flash_ok(1, ofl_no_verify)[0] is False
+    assert _openfpga_flash_ok(1, ofl_32u3)[0] is True      # 良性 auto_boot_*_fail 不得误判
     print("programmer 解析自测 PASS（online / locked / unlocked / 未连接 / 烧录成败 / openFPGALoader 校验）")
