@@ -94,6 +94,21 @@ def _write_ok(rc: int, out: str) -> bool:
     return rc == 0 and ("finished" in low or "success" in low)
 
 
+def _efuse_write_ok(rc: int, out: str) -> bool:
+    """eFuse key write (+auto-lock via --keywritefile) succeeded.
+
+    Unlike _write_ok this does NOT require rc == 0: Gowin's --keywritefile
+    returns a NON-ZERO exit code even on success, and prints its own marker
+    "Writing reading and locked success." (note: not "Finished.").  So judge by
+    that success marker, with the usual hard-failure markers still vetoing
+    (e.g. a real failure prints "Error: Verify failed.").  _efuse_ensure then
+    reads the lock bit back (--keyread -> "Device Locked") as the final proof."""
+    low = out.lower()
+    if any(m in low for m in _WRITE_FAIL_MARKERS):
+        return False
+    return "locked success" in low or "success" in low
+
+
 # openFPGALoader failure markers -- benign blank-flash output ("flash chip
 # unknown: use basic protection detection", Erasing/Writing/Reading/Done) has
 # none of these; a verify mismatch or any hard failure prints "Error:"/"fail".
@@ -351,7 +366,7 @@ def efuse_lock(prog: Programmer, cable_index: int | None = None,
     rc, out = _run(prog, [*_cable_args(prog.device, cable),
                           "--keywritefile", "--keyFile", str(key)],
                    log_cb, cancel, timeout_s=max(prog.timeout_s, 120))
-    ok = _write_ok(rc, out)
+    ok = _efuse_write_ok(rc, out)
     log_cb("[efuse] " + (t("write-lock complete (key written and locked)") if ok else t("write-lock failed")))
     return ok
 
@@ -391,6 +406,16 @@ if __name__ == "__main__":
     assert _write_ok(0, flash_bad) is False
     assert _write_ok(0, flash_bad2) is False      # Error:+Finished 同现 -> 失败
     assert _write_ok(1, flash_ok) is False        # nonzero rc, even with "Finished"
+    # eFuse 写(--keywritefile 自动锁)：成功也返回非零 rc、回显 "locked success"
+    # 而非 "Finished."（实机 GW5AT-60B 抓包）；失败回显 "Error: Verify failed."
+    ef_ok = (" Key1 Sel.\n Key Writing.\n Key Reading.\n"
+             " Writing reading and locked success.\n Cost 5.56 second(s)")
+    ef_bad = (" Key1 Sel.\n Key Writing.\n Key Reading.\n"
+              "Error: Verify failed.\n Cost 2.34 second(s)")
+    assert _efuse_write_ok(1, ef_ok) is True       # 非零 rc + locked success -> 成功
+    assert _efuse_write_ok(0, ef_ok) is True
+    assert _efuse_write_ok(1, ef_bad) is False     # Verify failed -> 失败
+    assert _efuse_write_ok(0, ef_bad) is False
     # openFPGALoader 烧空板：未识别 flash 上擦+写+校验全过却硬返回非零码（同事实测），
     # 故以 "Verifying write" 后出现 Done（回读通过）为准，不认退出码；校验被截断或
     # 不符时绝不放行，防止没真正写对的板流过产测。
