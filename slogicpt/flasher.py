@@ -37,11 +37,13 @@ class _LogBridge(io.TextIOBase):
 
 
 def flash_app_firmware(*, vid: int, pid: int, addr: int, firmware: Path,
-                       verify: bool = True,
+                       verify: bool = True, ota=None,
                        log_cb: Callable[[str], None] | None = None,
                        cancel: threading.Event | None = None) -> None:
     """Flash the application firmware onto a device in DFU mode.
 
+    `ota` (optional): a profiles.OtaParams carrying USB-SPI bridge tuning
+    (write_chunk / read_chunk / timeouts); None keeps conservative defaults.
     Raises FlashError with a readable message on any failure.
     """
     firmware = Path(firmware)
@@ -58,7 +60,7 @@ def flash_app_firmware(*, vid: int, pid: int, addr: int, firmware: Path,
     try:
         with contextlib.redirect_stdout(out):
             try:
-                flash_firmware(vid, pid, addr, data, verify=verify)
+                flash_firmware(vid, pid, addr, data, verify=verify, ota=ota)
             except Exception as first:
                 # a stalled/stuck DFU device fails the very first bulk
                 # transfer with EIO -- reset the device once and retry
@@ -68,7 +70,7 @@ def flash_app_firmware(*, vid: int, pid: int, addr: int, firmware: Path,
                 print(t("USB transfer failed ({err}), resetting device and "
                         "retrying once…").format(err=first))
                 _usb_reset(vid, pid)
-                flash_firmware(vid, pid, addr, data, verify=verify)
+                flash_firmware(vid, pid, addr, data, verify=verify, ota=ota)
     except FlashError:
         raise
     except Exception as e:  # usb.core errors, RuntimeError, assertion...

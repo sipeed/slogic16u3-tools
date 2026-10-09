@@ -3,12 +3,21 @@ from .usb_device import USBDevice
 from .spi_device import SPIDevice
 
 class SPIFlashDevice:
-    def __init__(self, vid, pid):
-        self.usb_device = USBDevice(vid, pid)
+    # 默认值即保守稳定值（与旧硬编码一致）；由 product.toml [ota] 经 flash_firmware
+    # 覆盖，便于在不重编译的前提下调参提速。
+    def __init__(self, vid, pid, write_chunk: int = 0x0C, read_chunk: int = 0x40,
+                 usb_timeout_ms: int = 1000, wip_timeout_s: float = 5.0,
+                 reset_settle_s: float = 2.0):
+        self.usb_device = USBDevice(vid, pid, timeout_ms=usb_timeout_ms,
+                                    settle_s=reset_settle_s)
         self.page_size = 0x100
-        
+        self.write_chunk = write_chunk
+        self.read_chunk = read_chunk
+        self.usb_timeout_ms = usb_timeout_ms
+        self.wip_timeout_s = wip_timeout_s
+
     def __enter__(self):
-        self.spi = SPIDevice(self.usb_device).__enter__()
+        self.spi = SPIDevice(self.usb_device, timeout=self.usb_timeout_ms).__enter__()
         return self
         
     def __exit__(self, exc_type, exc_val, exc_tb):
@@ -26,18 +35,17 @@ class SPIFlashDevice:
         """Read unique ID (16 bytes)"""
         return self.spi.xfer(b'\x4B', 16, 4)
         
-    # USB-SPI 桥每次 CMD_READ_DATA 只能返回单个批量包（≤64B）；请求 65B 起即
-    # [Errno 75] Overflow 并卡死端点。故回读按 64B 分块。
-    READ_CHUNK = 0x40
-
+    # 回读分块大小 self.read_chunk（默认 64）。注意：USB-SPI 桥每次 CMD_READ_DATA
+    # 多半只返回单个批量包（≤64B，High-Speed 可能更大）；请求过大可能 [Errno 75]
+    # Overflow 并卡死端点。由 [ota].read_chunk 调整，稳步上调确认。
     def read_data(self, addr, length):
         """Read data from specified address"""
         data = b''
         got = 0
         while got < length:
             need = length - got
-            if need > self.READ_CHUNK:
-                need = self.READ_CHUNK
+            if need > self.read_chunk:
+                need = self.read_chunk
             data += self.spi.xfer(b'\x0B' + self._addr_to_bytes(addr+got), need, 1)
             got += need
         assert(len(data) == got)
@@ -54,11 +62,10 @@ class SPIFlashDevice:
             print(f'erase 64KB 0x{addr:06X}...')
             self.spi.xfer(b'\xD8' + self._addr_to_bytes(addr))
         
-    # 桥接器单次 SPI 写事务上限为 16 字节（PP 指令 0x02 + 3 字节地址 + ≤12 字节数据）；
-    # 超过则数据根本不发出、TX FIFO 卡死、总线挂起（SR1 恒读 0xff）。故每次页编程最多
-    # 写 12 字节，且不得跨 256 字节页边界（PP 在页内回卷，跨界会写错地址）。
-    WRITE_CHUNK = 0x0C  # 12
-
+    # 页编程每次 SPI 事务的数据字节 self.write_chunk（默认 12）。保守值 12 来自
+    # 桥接器单事务上限（0x02 PP + 3 字节地址 + ≤12 数据 = 16B）——超限则数据不发出、
+    # TX FIFO 卡死、总线挂起（SR1 恒读 0xff）。提速主杠杆，由 [ota].write_chunk 调大；
+    # program() 已按 256 页边界分块（PP 在页内回卷，跨界会写错地址），故上限 256。
     def program_page(self, addr, payload):
         """写入一段 ≤12 字节且不跨 256 页边界的数据（单次 PP 事务）"""
         with self.we():
@@ -71,7 +78,7 @@ class SPIFlashDevice:
         while programed < length:
             a = addr + programed
             room = 0x100 - (a & 0xFF)          # 到下一个 256 页边界的剩余字节
-            need = min(self.WRITE_CHUNK, room, length - programed)
+            need = min(self.write_chunk, room, length - programed)
             data = payload[programed: programed+need]
             if data.count(0xFF) != need:       # 全 0xFF 段跳过（擦除后本就是 0xFF）
                 self.program_page(a, data)
@@ -91,7 +98,8 @@ class SPIFlashDevice:
         ])
         
     class _WriteEnableManager:
-        WIP_TIMEOUT_S = 5.0  # 页写 <1ms、64KB 擦除 ~数百 ms，5s 足够且能兜住通信异常
+        # 页写完成轮询超时取自 flash_dev.wip_timeout_s（默认 5s）：页写 <1ms、
+        # 64KB 擦除 ~数百 ms，5s 足够且能兜住通信异常（SR1 恒 0xFF 的死等）。
 
         def __init__(self, flash_dev):
             self.flash_dev = flash_dev
@@ -115,7 +123,7 @@ class SPIFlashDevice:
                     raise RuntimeError(t("Flash communication error: SR1 stuck reading 0xFF (bus hung)"))
                 if not (sr & 0x1):  # S0:WIP=0，写入完成
                     break
-                if time.time() - t0 > self.WIP_TIMEOUT_S:
+                if time.time() - t0 > self.flash_dev.wip_timeout_s:
                     raise RuntimeError(t("Flash write wait timed out: WIP did not clear in time"))
             self.flash_dev.spi.xfer(b'\x04')  # Write Disable
 
@@ -124,15 +132,24 @@ ERASE_BLOCK = 0x10000  # 64KB
 
 
 def flash_firmware(vid: int, pid: int, addr: int, firmware: bytes,
-                   verify: bool = True, dump_file: str | None = None) -> None:
-    """Erase + program + optional verify.  Raises RuntimeError on failure."""
+                   verify: bool = True, dump_file: str | None = None,
+                   ota=None) -> None:
+    """Erase + program + optional verify.  Raises RuntimeError on failure.
+
+    `ota` (optional): any object carrying write_chunk / read_chunk /
+    usb_timeout_ms / wip_timeout_s / reset_settle_s (a profiles.OtaParams);
+    None keeps the conservative defaults.  Duck-typed so dfu/ stays decoupled."""
     if addr % ERASE_BLOCK != 0:
         raise RuntimeError(t("Start address 0x{addr:06X} is not 64KB-aligned").format(addr=addr))
     size = len(firmware)
     if size == 0:
         raise RuntimeError(t("Firmware is empty"))
 
-    with SPIFlashDevice(vid, pid) as flash:
+    kw = {} if ota is None else dict(
+        write_chunk=ota.write_chunk, read_chunk=ota.read_chunk,
+        usb_timeout_ms=ota.usb_timeout_ms, wip_timeout_s=ota.wip_timeout_s,
+        reset_settle_s=ota.reset_settle_s)
+    with SPIFlashDevice(vid, pid, **kw) as flash:
         if not flash.reset():
             raise RuntimeError(t("SPI flash reset failed"))
         # 读 ID 确认 flash 可用：上次会话中途中断可能让 flash 停在坏状态，

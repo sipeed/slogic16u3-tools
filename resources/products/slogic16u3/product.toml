@@ -45,6 +45,16 @@ app = "firmware/app.bin"     # 相对本产品目录；由管理员放置（giti
 app_flash_addr = 0x0         # 应用固件在 SPI Flash 中的烧写起始地址
 verify = true                # 烧写后回读校验
 
+[ota]                        # DFU 升级 app.bin（USB-SPI 桥）调参，缺省即保守稳定值
+# write_chunk 是提速主杠杆：页编程每笔 SPI 事务的数据字节，调大 = USB 往返更少 = 更快。
+# 受桥接器 TX FIFO/单事务上限约束，过大会卡死总线（SR1 恒读 0xFF、烧录挂起）。
+# 建议 12→32→64→128→256 逐级试、全程保持 verify=true，确认稳定再固定。超范围自动钳位。
+write_chunk = 12             # 本机实测：16 即失败、只能 12（16U3 桥 TX FIFO 更小）。1..256
+read_chunk = 64             # 1..512，回读校验每次 CMD_READ_DATA 字节
+usb_timeout_ms = 1000        # 单次 USB 批量传输超时
+wip_timeout_s = 5.0          # 页写/擦除完成轮询超时
+reset_settle_s = 2.0         # 复位后重枚举等待（每次烧录固定开销，稳定后可下调提速）
+
 [mode_switch]
 # DFU<->APP 切换按可用方案自动分派（无需脚本）：
 #   1. usb_reconfig = true：产品自身 USB 控制传输 RECONFIG（16U3 不支持）；

@@ -6,13 +6,17 @@ import usb.util
 from ..i18n import t
 
 class USBDevice:
-    def __init__(self, vid: int, pid: int, interface_num: int = 0):
+    def __init__(self, vid: int, pid: int, interface_num: int = 0,
+                 timeout_ms: int = 1000, settle_s: float = 2.0):
         """
         初始化USB设备
         :param vid: 厂商ID (Vendor ID)
         :param pid: 产品ID (Product ID)
         :param interface_num: 使用的接口编号（默认为0）
+        :param timeout_ms: 批量传输默认超时(ms)，可由 [ota].usb_timeout_ms 调整
+        :param settle_s: 复位后等待重枚举的秒数，可由 [ota].reset_settle_s 调整
         """
+        self.timeout_ms = timeout_ms
         # 与设备检测共用同一 libusb 后端：Windows 优先加载内置的
         # resources/bin/libusb-1.0.dll（见 device_watch.libusb_backend），
         # 否则系统查找。旧代码在此自建后端且回退分支传目录名，Windows 无
@@ -38,7 +42,7 @@ class USBDevice:
         except usb.core.USBError:
             pass
         usb.util.dispose_resources(dev)
-        time.sleep(2.0)  # 等待重枚举完成
+        time.sleep(settle_s)  # 等待重枚举完成（[ota].reset_settle_s）
 
         self.dev = usb.core.find(idVendor=vid, idProduct=pid, backend=backend)
         if self.dev is None:
@@ -62,28 +66,29 @@ class USBDevice:
         if None in (self.ep_out, self.ep_in):
             raise ValueError(t("Required input/output endpoints not found"))
 
-    def write(self, data: bytes, timeout: int = 1000) -> int:
+    def write(self, data: bytes, timeout: int | None = None) -> int:
         """
         发送数据到设备
         :param data: 要发送的字节数据
-        :param timeout: 超时时间（毫秒）
+        :param timeout: 超时时间（毫秒）；None 用实例默认 self.timeout_ms
         :return: 实际发送的字节数
         """
-        return self.ep_out.write(data, timeout)
+        return self.ep_out.write(data, self.timeout_ms if timeout is None else timeout)
 
-    def read(self, size: int, timeout: int = 1000) -> bytes:
+    def read(self, size: int, timeout: int | None = None) -> bytes:
         """
         从设备读取数据
         :param size: 要读取的最大字节数
-        :param timeout: 超时时间（毫秒）
+        :param timeout: 超时时间（毫秒）；None 用实例默认 self.timeout_ms
         :return: 读取到的字节数据
         """
         # 批量 IN 端点上，若申请长度不是 wMaxPacketSize 的整数倍，设备发来一个
         # 满包就会触发 [Errno 75] Overflow。按整包倍数申请缓冲再截取实际长度，
         # 是 libusb 上规避该问题的标准做法。
+        to = self.timeout_ms if timeout is None else timeout
         mps = self.ep_in.wMaxPacketSize
         buf_size = ((size + mps - 1) // mps) * mps
-        data = bytes(self.ep_in.read(buf_size, timeout))
+        data = bytes(self.ep_in.read(buf_size, to))
         return data[:size]
 
     def close(self):

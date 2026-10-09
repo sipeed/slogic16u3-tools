@@ -158,6 +158,37 @@ class Timeouts:
     blank_flash_step_s: float = 120
 
 
+@dataclass(frozen=True)
+class OtaParams:
+    """DFU app.bin 烧录（USB-SPI 桥）调参，来自 product.toml [ota]。默认即当前
+    保守稳定值——不写 [ota] 行为完全不变。提速主杠杆是 write_chunk：调大 = 每笔
+    USB 往返写更多字节 = 更快，但受桥接器 TX FIFO/单事务上限约束，过大会卡死总线
+    （SR1 恒读 0xFF）；调参时保持 verify=on，逐级上调确认稳定。各字段已在解析时
+    钳到安全范围。"""
+    write_chunk: int = 12        # 页编程每次 SPI 事务的数据字节（1..256，不跨 256 页边界）
+    read_chunk: int = 64         # 回读校验每次 CMD_READ_DATA 字节（1..512）
+    usb_timeout_ms: int = 1000   # 单次 USB 批量传输超时
+    wip_timeout_s: float = 5.0   # 页写/擦除完成轮询超时
+    reset_settle_s: float = 2.0  # 建链前整机复位后的重枚举等待（每次烧录固定开销）
+
+
+def _parse_ota(raw: dict) -> OtaParams:
+    """解析 [ota]，缺省回退默认值，并钳到安全范围（防止写坏/卡死）。"""
+    def ci(key: str, default: int, lo: int, hi: int) -> int:
+        return max(lo, min(hi, int(raw.get(key, default))))
+
+    def cf(key: str, default: float, lo: float, hi: float) -> float:
+        return max(lo, min(hi, float(raw.get(key, default))))
+
+    return OtaParams(
+        write_chunk=ci("write_chunk", 12, 1, 256),
+        read_chunk=ci("read_chunk", 64, 1, 512),
+        usb_timeout_ms=ci("usb_timeout_ms", 1000, 50, 600_000),
+        wip_timeout_s=cf("wip_timeout_s", 5.0, 0.1, 600.0),
+        reset_settle_s=cf("reset_settle_s", 2.0, 0.0, 30.0),
+    )
+
+
 @dataclass
 class Problem:
     severity: Literal["error", "warning"]
@@ -196,6 +227,7 @@ class ProductProfile:
     product_dir: Path                   # resources/products/<id>/（固件等资源按此解析）
     programmer: Programmer | None       # None -> programmer.toml 缺失/无效，无烧录能力
     timeouts: Timeouts
+    ota: OtaParams                      # DFU app.bin 烧录调参（product.toml [ota]）
 
     @property
     def unitsize(self) -> int:
@@ -429,6 +461,7 @@ def _parse_profile(product_dir: Path,
             capture_s=float(tmo.get("capture_s", 120)),
             blank_flash_step_s=float(tmo.get("blank_flash_step_s", 120)),
         )
+        ota = _parse_ota(doc.get("ota", {}))
 
         profile = ProductProfile(
             id=prod_id,
@@ -459,6 +492,7 @@ def _parse_profile(product_dir: Path,
             product_dir=product_dir,
             programmer=programmer,
             timeouts=timeouts,
+            ota=ota,
         )
         return profile, problems
     except (KeyError, ValueError, TypeError) as e:
@@ -555,6 +589,16 @@ def check_resources(profiles: list[ProductProfile],
 
 
 if __name__ == "__main__":
+    # [ota] 解析自测：缺省回退默认、越界钳位、正常透传
+    assert _parse_ota({}) == OtaParams()
+    assert _parse_ota({"write_chunk": 9999}).write_chunk == 256   # 上限钳位
+    assert _parse_ota({"write_chunk": 0}).write_chunk == 1        # 下限钳位
+    assert _parse_ota({"read_chunk": 99999}).read_chunk == 512
+    assert _parse_ota({"reset_settle_s": -5}).reset_settle_s == 0.0
+    assert _parse_ota({"write_chunk": 128, "read_chunk": 256}) == \
+        OtaParams(write_chunk=128, read_chunk=256)
+    print("[ota] 解析自测 PASS")
+
     profiles, problems = load_profiles()
     print(f"== 加载 {len(profiles)} 个产品档案 ==")
     for p in profiles:

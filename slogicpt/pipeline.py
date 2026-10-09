@@ -435,11 +435,15 @@ class Pipeline:
                   f"success = no USB/DFU error"
                   + (", read-back verify on" if self.profile.verify_after_flash
                      else ", verify OFF"))
+        o = self.profile.ota
+        self._log(f"[ota] write_chunk={o.write_chunk} read_chunk={o.read_chunk} "
+                  f"usb_timeout_ms={o.usb_timeout_ms} wip_timeout_s={o.wip_timeout_s} "
+                  f"reset_settle_s={o.reset_settle_s}")
         try:
             flasher.flash_app_firmware(
                 vid=self.profile.vid, pid=self.profile.dfu_pid,
                 addr=self.profile.app_flash_addr, firmware=fw,
-                verify=self.profile.verify_after_flash,
+                verify=self.profile.verify_after_flash, ota=self.profile.ota,
                 log_cb=self._log, cancel=self.cancel)
             self.report_lines.append(t("DFU flash") + f": OK ({fw})")
             return True

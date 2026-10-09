@@ -53,6 +53,16 @@ app = "firmware/app.bin"     # 相对本产品目录（gitignore）
 app_flash_addr = 0x0                 # TBD：随硬件确认修改
 verify = true
 
+[ota]                        # DFU 升级 app.bin（USB-SPI 桥）调参，缺省即保守稳定值
+# write_chunk 是提速主杠杆：页编程每笔 SPI 事务的数据字节，调大 = USB 往返更少 = 更快。
+# 受桥接器 TX FIFO/单事务上限约束，过大会卡死总线（SR1 恒读 0xFF、烧录挂起）。
+# 建议 12→32→64→128→256 逐级试、全程保持 verify=true，确认稳定再固定。超范围自动钳位。
+write_chunk = 48             # 本机实测：48 稳定可用（32U3）。1..256，program 已按 256 页边界分块
+read_chunk = 64             # 1..512，回读校验每次 CMD_READ_DATA 字节
+usb_timeout_ms = 1000        # 单次 USB 批量传输超时
+wip_timeout_s = 5.0          # 页写/擦除完成轮询超时
+reset_settle_s = 2.0         # 复位后重枚举等待（每次烧录固定开销，稳定后可下调提速）
+
 [mode_switch]
 # 32U3 支持 USB 控制传输 RECONFIG（协议规范 0x30 设备管理扩展）自动双向切换
 # DFU<->APP：wValue=1 触发、wIndex=0x5253。工具在切换步骤直接下发，无需人工。
