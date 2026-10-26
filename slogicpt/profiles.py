@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from .fpga import (FPGA_PID, FPGA_SERIAL_HINTS, FPGA_VID, FixtureUsb)
 from .i18n import t
 
 if getattr(sys, "frozen", False):
@@ -28,6 +29,7 @@ else:
 OUTPUT_DIR = REPO_ROOT / "out"
 RESOURCES_DIR = REPO_ROOT / "resources"
 PRODUCTS_DIR = RESOURCES_DIR / "products"
+FIXTURE_CONFIG = RESOURCES_DIR / "fixture.toml"
 
 PLATFORM_KEY = {"Linux": "linux", "Windows": "windows"}.get(
     platform_mod.system(), "linux")
@@ -103,6 +105,12 @@ class SignalSource:
     reply_timeout_ms: int
     firmware: Path | None                # testgen.fs, loaded into the fixture's SRAM
     channel_order: tuple[int, ...]       # generator channel -> analyser channel
+    serial_hints: tuple[str, ...] = FPGA_SERIAL_HINTS
+
+    @property
+    def usb(self) -> FixtureUsb:
+        """The USB identity this fixture is looked up by."""
+        return FixtureUsb(self.vid, self.pid, self.serial_hints)
 
 
 @dataclass(frozen=True)
@@ -164,6 +172,49 @@ class Problem:
         return f"{self.severity.upper()}: {prefix}{self.message}"
 
 
+def load_fixture_usb(path: Path = FIXTURE_CONFIG
+                     ) -> tuple[FixtureUsb | None, list[Problem]]:
+    """Read the fixture's USB identity from resources/fixture.toml.
+
+    The file is optional: when it is missing, the product profiles' own vid/pid
+    (or the built-in defaults) are used, so an old resources/ tree keeps
+    working.  A present-but-broken file yields a Problem and falls back to the
+    same defaults.
+    """
+    problems: list[Problem] = []
+    if not path.is_file():
+        return None, problems
+    try:
+        doc = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (tomllib.TOMLDecodeError, OSError) as e:
+        problems.append(Problem("error", None,
+                                t("fixture.toml parse failed: {e}").format(e=e)))
+        return None, problems
+    if doc.get("schema_version") != SCHEMA_VERSION:
+        problems.append(Problem(
+            "error", None,
+            t("fixture.toml schema_version should be {expected}, actual {actual!r}")
+            .format(expected=SCHEMA_VERSION, actual=doc.get("schema_version"))))
+        return None, problems
+    try:
+        raw = doc["fixture"]
+        vid = int(raw["vid"])
+        pid = int(raw["pid"])
+        hints_raw = raw["serial_hints"]
+        if not isinstance(hints_raw, list):
+            raise ValueError("serial_hints must be a list of strings")
+        hints = tuple(str(x).strip() for x in hints_raw if str(x).strip())
+        if not hints:
+            raise ValueError("serial_hints is empty")
+        if not (0 <= vid <= 0xFFFF and 0 <= pid <= 0xFFFF):
+            raise ValueError("vid/pid out of range")
+    except (KeyError, TypeError, ValueError) as e:
+        problems.append(Problem("error", None,
+                                t("fixture.toml is invalid: {e}").format(e=e)))
+        return None, problems
+    return FixtureUsb(vid=vid, pid=pid, serial_hints=hints), problems
+
+
 @dataclass(frozen=True)
 class ProductProfile:
     id: str
@@ -200,11 +251,34 @@ class ProductProfile:
 
 
 def _parse_signal_source(doc: dict, product_dir: Path, num_channels: int,
-                         problems: list, pid_for_log: str) -> SignalSource:
+                         problems: list, pid_for_log: str,
+                         fixture: FixtureUsb | None) -> SignalSource:
     """Parse [signal_source] (required: every product is tested against the
-    fixture)."""
+    fixture).  `fixture` (resources/fixture.toml) overrides the USB identity;
+    without that file the product's own vid/pid/serial_hints are the fallback."""
     raw = doc["signal_source"]
     firmware = (product_dir / str(raw["firmware"])).resolve()
+
+    if fixture is not None:
+        usb = fixture
+    else:
+        hints_raw = raw.get("serial_hints", FPGA_SERIAL_HINTS)
+        if isinstance(hints_raw, str):
+            hints_raw = [hints_raw]
+        try:
+            hints = tuple(str(x).strip() for x in hints_raw if str(x).strip())
+        except TypeError:
+            hints = ()
+        if not hints:
+            problems.append(Problem(
+                "error", pid_for_log,
+                t("signal_source.serial_hints must be a non-empty list")))
+            hints = FPGA_SERIAL_HINTS
+        usb = FixtureUsb(
+            vid=int(raw.get("vid", FPGA_VID)),
+            pid=int(raw.get("pid", FPGA_PID)),
+            serial_hints=hints,
+        )
 
     order_raw = raw.get("channel_order")
     if order_raw is None:
@@ -220,13 +294,14 @@ def _parse_signal_source(doc: dict, product_dir: Path, num_channels: int,
 
     return SignalSource(
         serial=str(raw.get("serial", "auto")),
-        vid=int(raw.get("vid", 0x0403)),
-        pid=int(raw.get("pid", 0x6010)),
+        vid=usb.vid,
+        pid=usb.pid,
         baud=int(raw.get("baud", 115200)),
         settle_ms=int(raw.get("settle_ms", 400)),
         reply_timeout_ms=int(raw.get("reply_timeout_ms", 1000)),
         firmware=firmware,
         channel_order=order,
+        serial_hints=usb.serial_hints,
     )
 
 
@@ -307,7 +382,8 @@ def _parse_threshold_groups(doc: dict, num_channels: int, default_v: float,
     return out
 
 
-def _parse_profile(product_dir: Path) -> tuple[ProductProfile | None, list[Problem]]:
+def _parse_profile(product_dir: Path,
+                   fixture: FixtureUsb | None) -> tuple[ProductProfile | None, list[Problem]]:
     problems: list[Problem] = []
     pid_for_log = product_dir.name
     toml_file = product_dir / "product.toml"
@@ -350,7 +426,7 @@ def _parse_profile(product_dir: Path) -> tuple[ProductProfile | None, list[Probl
 
         default_vth = float(capture.get("voltage_threshold_v", 1.6))
         signal_source = _parse_signal_source(doc, product_dir, num_channels,
-                                             problems, prod_id)
+                                             problems, prod_id, fixture)
         plan = _parse_plan(doc, num_channels, samplerates_hz, max_bw,
                            problems, prod_id)
         threshold_groups = _parse_threshold_groups(doc, num_channels, default_vth,
@@ -394,10 +470,14 @@ def _parse_profile(product_dir: Path) -> tuple[ProductProfile | None, list[Probl
 
 
 def load_profiles(products_dir: Path = PRODUCTS_DIR) -> tuple[list[ProductProfile], list[Problem]]:
-    """Load every resources/products/<id>/product.toml.  A broken product yields
-    a Problem and is skipped without affecting other products."""
+    """Load resources/fixture.toml and every resources/products/<id>/product.toml.
+    A broken product yields a Problem and is skipped without affecting other
+    products; a broken fixture.toml yields a Problem and the products fall back
+    to their own (or the built-in) fixture USB identity."""
     profiles: list[ProductProfile] = []
     problems: list[Problem] = []
+    fixture, fixture_problems = load_fixture_usb()
+    problems.extend(fixture_problems)
     if not products_dir.is_dir():
         return [], [Problem("error", None,
                             t("product profile directory does not exist: {d}").format(d=products_dir))]
@@ -407,7 +487,7 @@ def load_profiles(products_dir: Path = PRODUCTS_DIR) -> tuple[list[ProductProfil
         return [], [Problem("error", None,
                             t("product profile directory is empty: {d}; please place <product_id>/product.toml").format(d=products_dir))]
     for d in dirs:
-        profile, probs = _parse_profile(d)
+        profile, probs = _parse_profile(d, fixture)
         problems.extend(probs)
         if profile is not None:
             profiles.append(profile)
@@ -447,6 +527,12 @@ def check_resources(profiles: list[ProductProfile],
 
 if __name__ == "__main__":
     profiles, problems = load_profiles()
+    fixture, _ = load_fixture_usb()
+    if fixture is not None:
+        print(f"夹具 USB: {fixture.vid:#06x}:{fixture.pid:#06x}  "
+              f"序列号关键字: {', '.join(fixture.serial_hints)}")
+    else:
+        print("夹具 USB: 未配置 fixture.toml（使用代码默认值）")
     print(f"== 加载 {len(profiles)} 个产品档案 ==")
     for p in profiles:
         dfu = f"{p.dfu_pid:#06x}" if p.dfu_pid is not None else "未配置"

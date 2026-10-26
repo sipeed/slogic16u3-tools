@@ -32,9 +32,9 @@ reconfig = true
 # ---------------------------------------------------------------------------
 # 夹具信号源
 # ---------------------------------------------------------------------------
-# BL702 桥的 VID:PID（pyserial 报十进制，这里是十六进制）。serial = "auto"
-# 时按这对 ID 自动找口（Linux 上 BL702 露出两个 ttyUSB，取接口 1 的 UART）；
-# 夹具没插时图案测试一步提示插上并等待；载入后仍不应答则该步判 FAIL。
+# 夹具的 VID/PID、序列号关键字在 resources/fixture.toml（各产品共用）：
+# 换批次/换固件导致 VID、PID 或序列号变化时只改那个文件，不必改代码。
+# 这里只声明本产品用的位流、串口参数和接线。
 #
 # firmware 由 openFPGALoader 载入夹具 SRAM，约 1.5 s。不写 Flash：片上 Flash 用
 # openFPGALoader 写报 "CRC check : FAIL"、写后不启动；外部 Flash 用 programmer_cli
@@ -45,8 +45,6 @@ reconfig = true
 #    的 SRAM 配置。
 [signal_source]
 serial           = "auto"
-vid              = 0x0403
-pid              = 0x6010
 baud             = 115200
 settle_ms        = 400      # 切模式后的稳定延时
 reply_timeout_ms = 1000     # 等 "MODE n" 回复的超时

@@ -93,6 +93,7 @@ python -m slogicpt                                  # 启动 GUI，点「开始�
 - **sigrok-cli 须用 SLogic 2.3.0 及以上**：旧版在 4ch@1400M 会回卷到 1600M、8ch@800M 收不到数据。
 - 产测台架不要接 Gowin 烧录器：它和夹具（BL702）同为 FTDI `0403:6010`，其 JTAG 操作还会干扰夹具 FPGA 的 SRAM 配置。
 - 产品识别：按 USB PID。
+- 夹具识别：VID/PID 与序列号关键字在 `resources/fixture.toml`（各产品共用）；换批次/换固件只改这个文件，不用改代码。
 - 夹具位流载入用 openFPGALoader：Linux 用发行版包；Windows 放 `resources/bin/openFPGALoader/openFPGALoader.exe`，
   并在「环境准备」里一键给夹具 FTDI 装 WinUSB 驱动（见 resources/README.md）。
 

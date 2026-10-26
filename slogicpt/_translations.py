@@ -163,22 +163,28 @@ ZH: dict[str, str] = {
     # ---- env_setup.py (title/hint only; deploy log stays English) --------
     "Linux device permissions (udev)": "Linux 设备权限 (udev)",
     "Windows driver (WinUSB)": "Windows 驱动 (WinUSB)",
-    "Install a udev rule for SLogic (359F) and the FTDI cable (0403:6010) for "
+    "Install a udev rule for SLogic (359F) and the fixture's FTDI ({pair}) for "
     "root-free access; deploying pops up an authorization dialog, then replug "
     "the device to take effect.":
-        "为 SLogic(359F) 与 FTDI 线缆(0403:6010) 安装 udev 规则，免 root 访问；"
+        "为 SLogic(359F) 与夹具 FTDI({pair}) 安装 udev 规则，免 root 访问；"
         "部署会弹出授权框，之后重新插拔设备生效。",
-    "Bind the fixture's FTDI A-channel (0403:6010 interface 0) to WinUSB, which "
+    "Bind the fixture's FTDI A-channel ({pair} interface 0) to WinUSB, which "
     "openFPGALoader needs to load the fixture; deploying pops up a UAC "
     "authorization dialog.":
-        "将夹具 FTDI A 通道(0403:6010 接口0)绑定到 WinUSB，openFPGALoader 载入夹具所需；"
+        "将夹具 FTDI A 通道({pair} 接口0)绑定到 WinUSB，openFPGALoader 载入夹具所需；"
         "部署会弹出 UAC 授权框。",
 
     # ---- fixture / signal source / plan (SLogic32U3 handover) ------------
-    'Cannot find the fixture: no 0403:6010 device reports a BL702 serial':
-        '找不到夹具：没有任何 0403:6010 设备的序列号含 BL702',
+    'fixture.toml parse failed: {e}': 'fixture.toml 解析失败：{e}',
+    'fixture.toml schema_version should be {expected}, actual {actual!r}':
+        'fixture.toml 的 schema_version 应为 {expected}，实际为 {actual!r}',
+    'fixture.toml is invalid: {e}': 'fixture.toml 配置无效：{e}',
+    'signal_source.serial_hints must be a non-empty list':
+        'signal_source.serial_hints 必须是非空列表',
+    'Cannot find the fixture: no {vid:#06x}:{pid:#06x} device reports a fixture serial':
+        '找不到夹具：没有任何 {vid:#06x}:{pid:#06x} 设备的序列号匹配夹具关键字',
     'openFPGALoader --scan-usb did not run: {p}': 'openFPGALoader --scan-usb 运行失败：{p}',
-    'no 0403:6010 device': '没有 0403:6010 设备',
+    'no matching USB device': '没有匹配的 USB 设备',
     "On Windows the fixture's FTDI channel A must use the WinUSB driver: deploy it on the Environment Setup page, then replug the fixture":
         'Windows 上夹具 FTDI 的 A 通道必须用 WinUSB 驱动：到「环境准备」页点「部署」，然后重新插拔夹具',
     'Loading fixture with openFPGALoader: {name} (FTDI serial {s})':
@@ -193,8 +199,8 @@ ZH: dict[str, str] = {
         '没有一个的序列号含 "{h}"',
     '{n} of them report a serial containing "{h}"':
         '其中 {n} 个的序列号含 "{h}"',
-    "Multiple 0403:6010 ports found ({names}); {hint}. The Gowin USB programmer is an FT2232H with the same IDs and two ports of its own, so unplug it if you do not need it, or set signal_source.serial explicitly to the fixture's port.":
-        '发现多个 0403:6010 串口（{names}）；{hint}。Gowin USB 编程器是同 ID 的 FT2232H，自带两个串口——不需要时请拔掉它，或在 signal_source.serial 中显式指定夹具的串口。',
+    "Multiple {vid:#06x}:{pid:#06x} ports found ({names}); {hint}. The Gowin USB programmer is an FT2232H with the same IDs and two ports of its own, so unplug it if you do not need it, or set signal_source.serial explicitly to the fixture's port.":
+        '发现多个 {vid:#06x}:{pid:#06x} 串口（{names}）；{hint}。Gowin USB 编程器是同 ID 的 FT2232H，自带两个串口——不需要时请拔掉它，或在 signal_source.serial 中显式指定夹具的串口。',
     'No Tang Nano signal generator found (looking for {vid:#06x}:{pid:#06x})':
         '未找到 Tang Nano 信号发生器（查找 {vid:#06x}:{pid:#06x}）',
     'Configured port {p} is not present':

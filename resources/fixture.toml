@@ -1,0 +1,18 @@
+# 夹具（Tang Nano 9K）的 USB 身份。
+#
+# 夹具和 Gowin USB 烧录器共用 FTDI 的 VID:PID 0403:6010，所以不能只看
+# VID/PID：还要用序列号关键字区分。换批次、换 BL702 固件后，如果 VID、PID
+# 或序列号变了，只改本文件，不用改代码、也不用重新打包程序。
+#
+# pyserial 把 VID/PID 报成十进制；这里按十六进制写。
+schema_version = 1
+
+[fixture]
+vid = 0x0403
+pid = 0x6010
+
+# 序列号里包含任一关键字即认作夹具（不区分大小写）。新批次序列号变了，
+# 在列表里加一条即可。已知：
+#   BL702_FTDI_2038131017A8   旧 BL702 固件
+#   FactoryAIOT Pro           新 BL702 固件（Windows 上显示为 FACTORYAIOT_PRO）
+serial_hints = ["BL702", "FACTORYAIOT"]

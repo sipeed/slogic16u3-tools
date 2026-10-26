@@ -308,11 +308,11 @@ class Pipeline:
 
     # ---- fixture USB presence -------------------------------------------
 
-    @staticmethod
-    def _fixture_ports() -> list[str]:
-        """夹具 Tang Nano 的串口（按 BL702 序列号认出，见 fpga.fixture_ports）。"""
+    def _fixture_ports(self) -> list[str]:
+        """夹具 Tang Nano 的串口（按 fixture.toml 里的 USB 身份认出，见
+        fpga.fixture_ports）。"""
         from .fpga import fixture_ports
-        return fixture_ports()
+        return fixture_ports(self.profile.signal_source.usb)
 
     def _wait_for_fixture(self) -> bool:
         """确保夹具已插上，需要时提示操作员并等待。

@@ -10,6 +10,7 @@ resources/
 │   └── product.toml              # 产品档案（USB PID / 通道 / 带宽 / 测试计划），公开入库
 ├── fixture/
 │   └── testgen.fs                # 信号源夹具（Tang Nano 9K）位流，各产品共用，入库
+├── fixture.toml                  # 夹具 USB 身份（VID/PID + 序列号关键字），各产品共用，入库
 └── bin/                          # 跨平台工具二进制
     ├── sigrok-cli-linux-x86_64            # sigrok-cli（须 SLogic 2.3.0 及以上）：Linux AppImage 重命名/软链
     ├── sigrok-cli-windows-x86_64.exe      #   Windows
@@ -29,6 +30,28 @@ ln -sf /path/to/sigrok-cli-SLogic-2.3.0-linux-x86_64.AppImage resources/bin/sigr
 夹具位流 `fixture/testgen.fs` 随仓库分发，不用另外放置。更新夹具 RTL 后，把新构建的
 `impl/pnr/testgen.fs` 覆盖到这里并提交即可，32U3 / 16U3 档案都引用这一份。
 
+## fixture.toml：夹具 USB 身份
+
+夹具（Tang Nano 9K）的 VID/PID 和序列号关键字集中在这里，32U3 / 16U3 共用：
+
+```toml
+schema_version = 1
+
+[fixture]
+vid = 0x0403
+pid = 0x6010
+serial_hints = ["BL702", "FACTORYAIOT"]
+```
+
+- 夹具和 Gowin USB 烧录器都是 `0403:6010`，所以 `serial_hints` 用来区分：
+  序列号含任一关键字（不区分大小写）才算夹具。
+- **新批次 VID/PID 变了**：改 `vid` / `pid`；**序列号变了**：往 `serial_hints`
+  里加一条。不用改代码，也不用重新打包；改完重启工具生效。
+- 改 VID/PID 后，Linux udev / Windows WinUSB 驱动要按新 ID 重新部署一次
+  （「环境准备」页读的是同一个文件）。
+- `product.toml` 不再写夹具的 `vid/pid`；没有 `fixture.toml` 时回退到代码内置默认值，
+  旧资源目录仍能启动。
+
 ## product.toml：产品档案
 
 主要段落（以 32U3 为例，完整注释见文件本身）：
@@ -37,7 +60,7 @@ ln -sf /path/to/sigrok-cli-SLogic-2.3.0-linux-x86_64.AppImage resources/bin/sigr
 [usb]
 links = ["10G", "5G"]      # 产测逐轮链路：先 10G 全测，提示换插 5G 口后再全测；第一轮是门槛
 
-[signal_source]            # 信号源夹具（Tang Nano 9K），32U3 / 16U3 相同
+[signal_source]            # 夹具位流 / 串口参数；VID/PID 与序列号关键字见 fixture.toml
 firmware = "../../fixture/testgen.fs"   # 必填，相对本产品目录；本次启动首次用到时载入 SRAM，不应答时重载
 
 [[capture.threshold_groups]]   # 1.8 V 的 bank 3 通道另用 0.9 V 阈值再采一次
@@ -86,7 +109,7 @@ GUI 顶栏的警告角标里的每一条都对应一个待放置/待确认项，
 ## 跨平台（Linux / Windows）
 
 - **Windows 夹具载入（openFPGALoader）**：夹具（Tang Nano 9K）的位流由 openFPGALoader 按
-  FTDI 序列号载入。工位放置：
+  USB bus/device 载入。工位放置：
   1. 把 `openFPGALoader.exe` 放到 `bin/openFPGALoader/`。**这是一个静态单文件 exe，
      不依赖任何第三方 DLL**（libusb/libftdi/zlib 及 C/C++ 运行库全部静态链接，仅用系统自带
      的 KERNEL32 / UCRT `api-ms-win-crt-*`），解压即用；
@@ -94,6 +117,7 @@ GUI 顶栏的警告角标里的每一条都对应一个待放置/待确认项，
      「环境准备」页点「部署」一键完成**（弹 UAC 授权，内部即调用同目录的 `wdi-simple.exe`）；
      也可命令行免点击：
      `bin\openFPGALoader\wdi-simple.exe -v 0x0403 -p 0x6010 -i 0 -t 0 -n "USB Serial Converter A (WinUSB)"`
+     （这里的 `0x0403/0x6010` 要与 `fixture.toml` 的 `vid/pid` 一致）
      需要还原时点同处的「移除」（或用设备管理器删掉该 WinUSB 驱动）；
 
   > openFPGALoader 官方 v1.1.1 GitHub release 只提供 MSYS2 动态包（exe + libftdi1 /

@@ -4,16 +4,18 @@ Two platform-specific concerns, each with a symmetric deploy / remove so the
 operator never has to open a terminal:
 
 * Linux  -- a udev rule granting the logged-in operator access to the SLogic
-  USB device (VID 0x359F) and the fixture's FTDI (0x0403:0x6010 used by
-  openFPGALoader).  Without it libusb can *enumerate* but serial reads,
-  captures and fixture loading fail with LIBUSB_ERROR_ACCESS.
+  USB device (VID 0x359F) and the fixture's FTDI (VID:PID from
+  resources/fixture.toml, used by openFPGALoader).  Without it libusb can
+  *enumerate* but serial reads, captures and fixture loading fail with
+  LIBUSB_ERROR_ACCESS.
   Needs root -> runs via pkexec (graphical polkit prompt).
 
-* Windows -- binding the FTDI A-channel (interface 0 of 0x0403:0x6010) to the
-  WinUSB driver, which openFPGALoader's fast flash path requires.  Done with
-  the bundled wdi-simple.exe (libwdi CLI); needs admin -> elevated through a
-  UAC prompt.  Remove deletes the WinUSB driver package currently bound to
-  that interface and rescans so Windows reinstalls the default FTDI driver.
+* Windows -- binding the FTDI A-channel (interface 0 of the fixture's
+  VID:PID) to the WinUSB driver, which openFPGALoader's fast flash path
+  requires.  Done with the bundled wdi-simple.exe (libwdi CLI); needs admin ->
+  elevated through a UAC prompt.  Remove deletes the WinUSB driver package
+  currently bound to that interface and rescans so Windows reinstalls the
+  default FTDI driver.
 
 deploy()/remove() stream progress through the given log callback and return a
 bool; callers run them off the UI thread.  requirement() is "" on platforms
@@ -33,17 +35,34 @@ from .profiles import PLATFORM_KEY, RESOURCES_DIR
 
 # --- identities -------------------------------------------------------------
 SLOGIC_VID = "359f"                 # SLogic DFU + APP
-FTDI_VID, FTDI_PID = "0403", "6010"  # fixture BL702 (FT2232 emulation), openFPGALoader
+# fallback values; the live ones come from resources/fixture.toml
+FTDI_VID, FTDI_PID = "0403", "6010"
 WINUSB_NAME = "USB Serial Converter A (WinUSB)"
+
+
+def _fixture_ids() -> tuple[str, str]:
+    """Lower-case VID, PID of the fixture FTDI (fixture.toml, else the defaults).
+    Driver deployment and the udev rule must follow the same identity the
+    recognition code uses, or a changed fixture would be seen but not usable."""
+    from .profiles import load_fixture_usb
+    usb, _ = load_fixture_usb()
+    if usb is None:
+        return FTDI_VID, FTDI_PID
+    return f"{usb.vid:04x}", f"{usb.pid:04x}"
+
 
 # --- Linux udev -------------------------------------------------------------
 UDEV_PATH = Path("/etc/udev/rules.d/60-sipeed-slogic.rules")
-UDEV_RULES = f"""\
+
+
+def _udev_rules() -> str:
+    ftdi_vid, ftdi_pid = _fixture_ids()
+    return f"""\
 # SLogic logic analyzer -- operator access (installed by the SLogic PT tool)
 # SLogic USB device (DFU + APP), VID 0x359F
 SUBSYSTEM=="usb", ATTR{{idVendor}}=="{SLOGIC_VID}", MODE="0660", TAG+="uaccess"
-# fixture FTDI (Tang Nano 9K BL702) used by openFPGALoader to load the fixture, 0x0403:0x6010
-SUBSYSTEM=="usb", ATTR{{idVendor}}=="{FTDI_VID}", ATTR{{idProduct}}=="{FTDI_PID}", MODE="0660", TAG+="uaccess"
+# fixture FTDI (Tang Nano 9K BL702) used by openFPGALoader to load the fixture
+SUBSYSTEM=="usb", ATTR{{idVendor}}=="{ftdi_vid}", ATTR{{idProduct}}=="{ftdi_pid}", MODE="0660", TAG+="uaccess"
 """
 
 # --- Windows WinUSB ---------------------------------------------------------
@@ -69,14 +88,17 @@ def title() -> str:
 
 def hint() -> str:
     req = requirement()
+    vid, pid = _fixture_ids()
+    pair = f"{vid.upper()}:{pid.upper()}"
     if req == "udev":
-        return t("Install a udev rule for SLogic (359F) and the FTDI cable "
-                 "(0403:6010) for root-free access; deploying pops up an "
-                 "authorization dialog, then replug the device to take effect.")
+        return t("Install a udev rule for SLogic (359F) and the fixture's FTDI "
+                 "({pair}) for root-free access; deploying pops up an "
+                 "authorization dialog, then replug the device to take effect."
+                 ).format(pair=pair)
     if req == "winusb":
-        return t("Bind the fixture's FTDI A-channel (0403:6010 interface 0) to WinUSB, "
+        return t("Bind the fixture's FTDI A-channel ({pair} interface 0) to WinUSB, "
                  "which openFPGALoader needs to load the fixture; deploying pops up "
-                 "a UAC authorization dialog.")
+                 "a UAC authorization dialog.").format(pair=pair)
     return ""
 
 
@@ -129,7 +151,7 @@ def _udev(log_cb, *, install: bool) -> bool:
         # heredoc so the rule text is immune to shell quoting
         script = (
             f"install -d -m 0755 {UDEV_PATH.parent} && "
-            f"cat > {UDEV_PATH} <<'SLOGIC_EOF'\n{UDEV_RULES}SLOGIC_EOF\n"
+            f"cat > {UDEV_PATH} <<'SLOGIC_EOF'\n{_udev_rules()}SLOGIC_EOF\n"
             f"udevadm control --reload-rules && udevadm trigger")
     else:
         log_cb(f"Removing udev rule <- {UDEV_PATH}")
@@ -202,9 +224,11 @@ def _winusb_deploy(log_cb) -> bool:
     if legacy.exists():
         pre += f'rmdir /s /q "{legacy}" >nul 2>&1 & '
     pre += "ping -n 2 127.0.0.1 >nul & "          # 约 1 秒，等进程真正退出
-    wdi = (pre + f'"{WDI_EXE}" -v 0x{FTDI_VID} -p 0x{FTDI_PID} -i 0 -t 0 '
+    ftdi_vid, ftdi_pid = _fixture_ids()
+    wdi = (pre + f'"{WDI_EXE}" -v 0x{ftdi_vid} -p 0x{ftdi_pid} -i 0 -t 0 '
            f'-o 15000 -d "{extract_dir}" -n "{WINUSB_NAME}"')
-    log_cb("Installing WinUSB on the FTDI A-channel (interface 0)...")
+    log_cb(f"Installing WinUSB on the FTDI A-channel (interface 0, "
+           f"{ftdi_vid.upper()}:{ftdi_pid.upper()})...")
     _run_elevated_bat(wdi, log_cb)
     if _wait_service(lambda s: s == "winusb", log_cb, timeout_s=15):
         log_cb("OK: WinUSB bound to the FTDI A-channel; probing/flashing now "
@@ -223,9 +247,10 @@ def _winusb_remove(log_cb) -> bool:
     # pnputil's own console text is localized (e.g. Chinese on zh-CN Windows)
     # and would arrive as mojibake through the redirected log, so silence it
     # (| Out-Null) and print our own ASCII status from the exit codes instead.
+    ftdi_vid, ftdi_pid = _fixture_ids()
     ps = f"""\
 $ErrorActionPreference = 'Continue'
-$hw = 'USB\\VID_{FTDI_VID.upper()}&PID_{FTDI_PID.upper()}&MI_00'
+$hw = 'USB\\VID_{ftdi_vid.upper()}&PID_{ftdi_pid.upper()}&MI_00'
 $devs = Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue |
         Where-Object {{ $_.InstanceId -like "$hw*" }}
 if (-not $devs) {{ Write-Output 'no FTDI A-channel device present' }}
@@ -276,7 +301,8 @@ def _winusb_service() -> str:
     When several such devices are present, any one on WinUSB counts."""
     import ctypes
     import winreg
-    hw = f"USB\\VID_{FTDI_VID.upper()}&PID_{FTDI_PID.upper()}&MI_00"
+    ftdi_vid, ftdi_pid = _fixture_ids()
+    hw = f"USB\\VID_{ftdi_vid.upper()}&PID_{ftdi_pid.upper()}&MI_00"
     try:
         root = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
                               "SYSTEM\\CurrentControlSet\\Enum\\" + hw)

@@ -15,8 +15,9 @@
 实测要点（这些都踩过，别重复踩）
 --------------------------------
 * 端口是 **VID:PID = 0x0403:0x6010**（BL702 模拟 FTDI），序列号形如
-  `BL702_FTDI_2038131017A8`。注意 **pyserial 把 vid/pid 报成十进制**
-  （0x0403 显示为 1027），比较时务必同时按十六进制写。
+  `BL702_FTDI_2038131017A8`（旧固件）或 `FactoryAIOT Pro`（新固件）。
+  注意 **pyserial 把 vid/pid 报成十进制**（0x0403 显示为 1027），比较时务必
+  同时按十六进制写。
 * **串口必须常开**。早期版本每次切模式都新起一个 PowerShell 去发字符，
   单次约 1.7 秒；常开后降到约 0.1 秒。40 格的矩阵里这是 60 秒的差别。
 * **模式没变就没有回复**，这是正常行为，不是故障。所以本模块缓存"已确认的
@@ -48,6 +49,8 @@ except ImportError:                     # pragma: no cover
 
 
 # 夹具 BL702 的 USB 标识。pyserial 报十进制（0x0403 == 1027）。
+# 这两个值和下面的序列号关键字是**默认值**；正常运行取 resources/fixture.toml，
+# 换批次/换固件只改那个文件。
 FPGA_VID = 0x0403
 FPGA_PID = 0x6010
 
@@ -55,15 +58,26 @@ FPGA_PID = 0x6010
 # 而且它的两个通道会各占一个串口。只要烧录器插着，自动查找就会同时匹配到
 # Tang Nano 和烧录器的 A/B 通道，于是报"找到多个"。
 #
-# 实测三个端口的序列号：
+# 实测端口的序列号：
 #     COM20  2025030317A                  <- 烧录器通道 A（FT2232）
 #     COM21  2025030317B                  <- 烧录器通道 B（FT2232）
-#     COM30  BL702_FTDI_2038131017A8      <- Tang Nano 9K
+#     COM30  BL702_FTDI_2038131017A8      <- Tang Nano 9K（旧 BL702 固件）
+#     COM25  FactoryAIOT Pro              <- Tang Nano 9K（新 BL702 固件）
 #
-# Tang Nano 的 BL702 固件会在序列号里带 `BL702`；普通 FT2232 不带。用它区分。
-# 这不是猜：把一个真的 FT2232 烧成 BL702 的序列号格式是不现实的，而反过来
-# 一个 BL702 也不会把自己报成别的名字。
-FPGA_SERIAL_HINT = "BL702"
+# Tang Nano 的 BL702 固件会在序列号里带 `BL702` 或 `FactoryAIOT`；普通 FT2232
+# 不带。用它区分。注意新版固件的序列号**含空格**，Windows 的设备实例 ID 会把
+# 空格换成下划线并转大写（pyserial 因此报 `FACTORYAIOT_PRO`），而 openFPGALoader
+# 看到的是原始的 `FactoryAIOT Pro`——两处都要按"含 FactoryAIOT"来认。
+FPGA_SERIAL_HINTS = ("BL702", "FACTORYAIOT")
+
+
+@dataclass(frozen=True)
+class FixtureUsb:
+    """夹具的 USB 身份（resources/fixture.toml）。默认值 = 当前已知硬件。"""
+    vid: int = FPGA_VID
+    pid: int = FPGA_PID
+    serial_hints: tuple[str, ...] = FPGA_SERIAL_HINTS
+
 
 # 夹具固件 testgen 现在有 7 个模式（M0..M6）。以前是 10 个，自测曾因此
 # 去问 M7..M9，FPGA 正确地拒绝确认，自测却把好硬件报成 FAIL。
@@ -88,36 +102,39 @@ class PortInfo:
     location: str | None = None      # Linux: "1-7.4.4:1.1" (…:config.interface)
 
 
-def find_ports() -> list[PortInfo]:
+def find_ports(usb: FixtureUsb = FixtureUsb()) -> list[PortInfo]:
     """列出所有看起来像 Tang Nano 的串口。"""
     if list_ports is None:
         return []
     out = []
     for p in list_ports.comports():
-        if p.vid == FPGA_VID and p.pid == FPGA_PID:
+        if p.vid == usb.vid and p.pid == usb.pid:
             out.append(PortInfo(p.device, p.description or "", p.serial_number,
                                 getattr(p, "location", None)))
     return out
 
 
-def is_fixture_serial(serial: str | None) -> bool:
-    """True for the fixture's BL702 (its serial carries "BL702"); False for the
-    Gowin programmer's FT2232H, which shares VID:PID 0403:6010."""
-    return FPGA_SERIAL_HINT in (serial or "").upper()
+def is_fixture_serial(serial: str | None,
+                      usb: FixtureUsb = FixtureUsb()) -> bool:
+    """True for the fixture's BL702 (its serial carries one of the configured
+    hints); False for the Gowin programmer's FT2232H, which shares VID:PID."""
+    s = (serial or "").upper()
+    return any(h.upper() in s for h in usb.serial_hints if h)
 
 
-def fixture_ports() -> list[str]:
+def fixture_ports(usb: FixtureUsb = FixtureUsb()) -> list[str]:
     """Serial ports of the fixture (empty when absent or pyserial is missing).
     The single source for "is the fixture plugged in" -- pipeline and the GUI
     both ask here."""
     try:
-        return [p.device for p in find_ports() if is_fixture_serial(p.serial_number)]
+        return [p.device for p in find_ports(usb)
+                if is_fixture_serial(p.serial_number, usb)]
     except Exception:                       # noqa: BLE001  (enumeration can fail mid-replug)
         return []
 
 
-def fixture_present() -> bool:
-    return bool(fixture_ports())
+def fixture_present(usb: FixtureUsb = FixtureUsb()) -> bool:
+    return bool(fixture_ports(usb))
 
 
 def _usb_interface(location: str | None) -> int | None:
@@ -127,7 +144,8 @@ def _usb_interface(location: str | None) -> int | None:
     return int(m.group(1)) if m else None
 
 
-def find_port(explicit: str | None = None) -> str:
+def find_port(explicit: str | None = None,
+              usb: FixtureUsb = FixtureUsb()) -> str:
     """定位信号发生器的串口。
 
     `explicit` 给出时直接用它（但仍要求存在）。否则按 VID:PID 自动查找。
@@ -141,24 +159,25 @@ def find_port(explicit: str | None = None) -> str:
                     t("Configured port {p} is not present").format(p=explicit))
         return explicit
 
-    cands = find_ports()
+    cands = find_ports(usb)
     if not cands:
         raise SignalSourceNotFound(
             t("No Tang Nano signal generator found (looking for {vid:#06x}:{pid:#06x})")
-            .format(vid=FPGA_VID, pid=FPGA_PID))
+            .format(vid=usb.vid, pid=usb.pid))
     if len(cands) == 1:
         return cands[0].device
 
-    # More than one 0403:6010 port. The usual cause is the Gowin USB programmer,
+    # More than one matching port. The usual cause is the Gowin USB programmer,
     # which is an FT2232H with the same IDs and TWO serial ports of its own -- so
     # plugging it in for a production run makes this look ambiguous even though
     # only one of the ports is the fixture.
     #
-    # The fixture's BL702 puts "BL702" in its serial number; an FT2232 does not.
-    bl702 = [c for c in cands if is_fixture_serial(c.serial_number)]
+    # The fixture's BL702 puts one of the configured serial hints in its serial
+    # number; an FT2232 does not.
+    bl702 = [c for c in cands if is_fixture_serial(c.serial_number, usb)]
     if len(bl702) == 1:
         return bl702[0].device
-    # One BL702 seen twice: on Linux its FT2232 emulation exposes BOTH interfaces
+    # One fixture seen twice: on Linux its FT2232 emulation exposes BOTH interfaces
     # as ttyUSB -- A (interface 0) is JTAG, B (interface 1) is the UART that
     # speaks the mode protocol. Windows usually shows only one COM port.
     if len({c.serial_number for c in bl702}) == 1:
@@ -166,17 +185,18 @@ def find_port(explicit: str | None = None) -> str:
         if len(uart) == 1:
             return uart[0].device
 
+    hints = " / ".join(usb.serial_hints)
     names = ", ".join("%s(%s)" % (c.device, c.serial_number) for c in cands)
     hint = (t("none of them reports a serial containing \"{h}\"")
-            .format(h=FPGA_SERIAL_HINT) if not bl702 else
+            .format(h=hints) if not bl702 else
             t("{n} of them report a serial containing \"{h}\"")
-            .format(n=len(bl702), h=FPGA_SERIAL_HINT))
+            .format(n=len(bl702), h=hints))
     raise SignalSourceNotFound(
-        t("Multiple 0403:6010 ports found ({names}); {hint}. "
+        t("Multiple {vid:#06x}:{pid:#06x} ports found ({names}); {hint}. "
           "The Gowin USB programmer is an FT2232H with the same IDs and two "
           "ports of its own, so unplug it if you do not need it, or set "
           "signal_source.serial explicitly to the fixture's port.")
-        .format(names=names, hint=hint))
+        .format(vid=usb.vid, pid=usb.pid, names=names, hint=hint))
 
 
 class SignalSource:
@@ -186,11 +206,13 @@ class SignalSource:
     """
 
     def __init__(self, port: str | None = None, baud: int = BAUD,
-                 settle_ms: int = 400, reply_timeout_ms: int = 1000):
+                 settle_ms: int = 400, reply_timeout_ms: int = 1000,
+                 usb: FixtureUsb | None = None):
         self._port_arg = port
         self._baud = baud
         self._settle_s = settle_ms / 1000.0
         self._reply_timeout_s = reply_timeout_ms / 1000.0
+        self._usb = usb or FixtureUsb()
         self._ser = None
         self._lock = threading.RLock()
         self._mode: int | None = None      # 已确认的模式；None = 未知
@@ -206,7 +228,7 @@ class SignalSource:
         with self._lock:
             if self._ser is not None:
                 return
-            self.port = find_port(self._port_arg)
+            self.port = find_port(self._port_arg, self._usb)
             try:
                 self._ser = serial.Serial(self.port, self._baud, timeout=0.05,
                                           write_timeout=2.0)
@@ -326,16 +348,26 @@ class SignalSource:
 # 命令行自测：python -m slogicpt.fpga
 # ---------------------------------------------------------------------------
 def _selftest() -> int:
+    usb = FixtureUsb()
+    try:
+        from .profiles import load_profiles
+        profiles, _ = load_profiles()
+        if profiles:
+            usb = profiles[0].signal_source.usb
+    except Exception:                                       # noqa: BLE001
+        pass
     print("== 查找信号发生器 ==")
-    cands = find_ports()
+    print("  USB 身份: %#06x:%#06x  serial_hints=%s"
+          % (usb.vid, usb.pid, ", ".join(usb.serial_hints)))
+    cands = find_ports(usb)
     if not cands:
-        print("  未找到（VID:PID %#06x:%#06x）" % (FPGA_VID, FPGA_PID))
+        print("  未找到（VID:PID %#06x:%#06x）" % (usb.vid, usb.pid))
         return 1
     for c in cands:
         print("  %s  %s  sn=%s" % (c.device, c.description, c.serial_number))
 
     print("== 打开 ==")
-    src = SignalSource()
+    src = SignalSource(usb=usb)
     try:
         src.open()
     except SignalSourceNotFound as e:

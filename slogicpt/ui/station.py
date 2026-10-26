@@ -157,6 +157,12 @@ class StationController(QObject):
 
     # ------------------------------------------------------------- polling
 
+    def _fixture_usb(self) -> fpga.FixtureUsb:
+        """USB identity for the fixture poll (resources/fixture.toml, via the
+        loaded product profiles; both products share it)."""
+        return (self.profiles[0].signal_source.usb if self.profiles
+                else fpga.FixtureUsb())
+
     def refresh_devices(self):
         """Poll the USB analyzers and the fixture.  The scan runs on a worker
         thread -- it repeats every 1.5 s, and pyusb plus the serial-port
@@ -173,7 +179,7 @@ class StationController(QObject):
             ok, ports, found = self.backend_ok, self.fixture_port_list, self.detected
             try:
                 ok = device_watch.backend_ok()
-                ports = fpga.fixture_ports()
+                ports = fpga.fixture_ports(self._fixture_usb())
                 found = device_watch.scan_devices(self.profiles) if ok else []
             except Exception as e:                          # noqa: BLE001
                 self.log.emit(f"[poll] {e}")
