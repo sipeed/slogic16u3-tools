@@ -150,6 +150,9 @@ class Verdict:
     # 机器可读的一句话失败原因（"no_edge" / "order" / …）。界面据此写成人话，
     # 不必去解析 detail 里那段给人看会头大的算法内部对比文本。
     reason: str = ""
+    # M0 only: when the rotation is a clean permutation, the analyser inputs
+    # that received another fixture channel, "D0<-CH1 D1<-CH0 ..."
+    wiring: str = ""
 
     @property
     def mark(self) -> str:
@@ -245,6 +248,14 @@ def check_order(measurements: list[Measurement], samples_per_step: float,
                 first_bad = ("rank %d: got CH%d at %.2f steps, expected CH%d at %d"
                              % (rank, ch, off, want_ch, want_off))
     offenders = tuple(sorted(set(missing) | set(disordered)))
+    reason = "no_edge" if missing else "order"
+    wiring = ""
+    if disordered and not missing:
+        gen = infer_wiring(offsets, n, period, tol_steps)
+        if gen is not None:
+            reason = wiring_pattern(gen, n)
+            wiring = " ".join("D%d<-CH%d" % (c, g) for c, g in sorted(gen.items())
+                              if c != g)
     bits = []
     if missing:
         bits.append("%d channels have no rising edge at all" % len(missing))
@@ -260,7 +271,45 @@ def check_order(measurements: list[Measurement], samples_per_step: float,
                    # channels 只放"完全没信号"的那几路（真正要去查的线）；
                    # 没有缺通道时才退回顺序错位的那几路。
                    channels=tuple(missing) if missing else tuple(disordered),
-                   reason=("no_edge" if missing else "order"))
+                   reason=reason, wiring=wiring)
+
+
+def infer_wiring(offsets: list[tuple[int, float]], n: int, period: int,
+                 tol_steps: float = 0.5) -> dict[int, int] | None:
+    """Analyser channel -> the fixture channel it actually receives, read off
+    the steps the channels first fire on (fixture CHg fires on step g of the
+    rotation).  None unless every channel lands on a whole step and together
+    they are exactly fixture CH0..CH<n-1> -- i.e. a pure swap of wires, which
+    is the only case worth naming.  With n == period every rotation fits (the
+    absolute phase is unknown): one that is a known miswiring wins, else the
+    one leaving most channels in place."""
+    steps = {}
+    for c, off in offsets:
+        k = round(off)
+        if abs(off - k) > tol_steps:
+            return None
+        steps[c] = k
+    best = None
+    for r in range(period):
+        gen = {c: (k + r) % period for c, k in steps.items()}
+        if sorted(gen.values()) != list(range(n)):
+            continue
+        score = (wiring_pattern(gen, n) != "wiring",
+                 sum(g == c for c, g in gen.items()))
+        if best is None or score > best[0]:
+            best = (score, gen)
+    return best[1] if best else None
+
+
+def wiring_pattern(gen: dict[int, int], n: int) -> str:
+    """Name a known miswiring: 'wiring_pairs' (every adjacent pair swapped,
+    the signature of a flipped two-row connector), 'wiring_groups8' (the two
+    8-channel groups swapped), else 'wiring' (some wires crossed)."""
+    if n >= 2 and n % 2 == 0 and all(g == c ^ 1 for c, g in gen.items()):
+        return "wiring_pairs"
+    if n >= 16 and n % 16 == 0 and all(g == c ^ 8 for c, g in gen.items()):
+        return "wiring_groups8"
+    return "wiring"
 
 
 def check_channel(m: Measurement, exp: Expect, tol_pct: float, tol_pp: float,
@@ -631,6 +680,25 @@ def _selftest() -> int:
         print("  constant %d -> static=%s toggling=%s" % (lvl, m.static, m.toggling))
         if m.static != lvl or m.toggling:
             print("  FAIL"); fails += 1
+
+    print("== M0 wiring diagnosis ==")
+    def firing(perm, period=32):
+        # analyser channel c receives fixture CH perm[c], which fires on step perm[c]
+        return [(c, float(g)) for c, g in enumerate(perm)]
+    cases = [("identity", list(range(16)), None),
+             ("pairs", [c ^ 1 for c in range(16)], "wiring_pairs"),
+             ("groups8", [c ^ 8 for c in range(16)], "wiring_groups8"),
+             ("one cross", [0, 1, 2, 5, 4, 3] + list(range(6, 16)), "wiring"),
+             ("32ch pairs", [c ^ 1 for c in range(32)], "wiring_pairs")]
+    for name, perm, want in cases:
+        offs = sorted(firing(perm), key=lambda cs: cs[1])
+        base = offs[0][1]
+        gen = infer_wiring([(c, o - base) for c, o in offs], len(perm), 32)
+        got = None if gen is None or all(g == c for c, g in gen.items()) \
+            else wiring_pattern(gen, len(perm))
+        ok = gen is not None and got == want
+        print("  %-10s -> %s %s" % (name, got, "ok" if ok else "FAIL"))
+        fails += 0 if ok else 1
 
     print("== M3 rotation order ==")
     # 4 ms window so a whole 3.2 ms rotation fits; a 2 ms window holds less than
