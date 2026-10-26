@@ -144,14 +144,13 @@ GUI 顶栏的警告角标里的每一条都对应一个待放置/待确认项，
     （libusb 1.0.27 不带 udev、libftdi1 1.5），构建脚本 `build-openFPGALoader-linux.sh` 随 Release 发布。
     **加了一行修复**：上游 `Gowin::skip_checksum` 从未初始化，GW1N(R)-9 载入 SRAM 后做不做 CRC
     校验取决于堆内存里的残留值——musl 下实测被跳过，工具因此判「未报告成功标记」。构造函数补上
-    `skip_checksum(false)` 后连载 5 次均 `CRC check: Success`。Windows 版（v1.1.1 原样）同样有这个
-    未初始化问题，目前碰巧读到 0、能正常校验。
+    `skip_checksum(false)` 后连载 5 次均 `CRC check: Success`。
   - `openFPGALoader.exe`：本体 Apache-2.0（[trabucayre/openFPGALoader](https://github.com/trabucayre/openFPGALoader)
-    v1.1.1，**源码未改**）；静态链入 libusb-1.0 / libftdi1（LGPL-2.1）、zlib（Zlib 许可）。
-    构建：llvm-mingw(UCRT) 交叉工具链 + 项目自带 `Toolchain-x86_64-w64-mingw32-clang.cmake`
-    （`BUILD_STATIC=ON`、`WINDOWS_CROSSCOMPILE=ON`、`CROSS_COMPILE_DEPS=ON`，libftdi 加
-    `-DCMAKE_POLICY_VERSION_MINIMUM=3.5`、zlib 静态版另建）。LGPL 组件源码均为上游公开、
-    未改动，构建方式如上——满足"可重链/可复现"。
+    v1.1.1，加同一行 `skip_checksum(false)` 修复）；静态链入 libusb-1.0 / libftdi1（LGPL-2.1）、zlib（Zlib 许可）。
+    构建：Linux 上用 llvm-mingw 20261020(UCRT) 交叉编译 + 项目自带 `Toolchain-x86_64-w64-mingw32-clang.cmake`
+    （`BUILD_STATIC=ON`、`WINDOWS_CROSSCOMPILE=ON`、`CROSS_COMPILE_DEPS=ON`，`CMAKE_POLICY_VERSION_MINIMUM=3.5`、
+    zlib 1.3.1 静态版另建），脚本 `build-openFPGALoader-windows.sh` 随 Release 发布。在 Windows 工位上
+    连载夹具 5 次均 `CRC check: Success`。LGPL 组件源码均为上游公开、未改动——满足"可重链/可复现"。
   - `wdi-simple.exe`：libwdi 的 CLI 示例（[pbatard/libwdi](https://github.com/pbatard/libwdi)，
     LGPL-3，**未改动**），从 Gowin USB Cable Driver 安装包（NSIS）提取。
 - **libusb 后端**：本工具用 pyusb 枚举 USB 设备（识别产品、APP/DFU 模式、链路速率）。

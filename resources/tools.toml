@@ -57,7 +57,7 @@ id       = "openFPGALoader"
 name     = "openFPGALoader v1.1.1"
 platform = "windows"
 dest     = "bin/openFPGALoader/openFPGALoader.exe"
-sha256   = "2aee62bce14f40d9e50c22a914f3aa18597eee6517e384b01bdcf0b5b71453e8"
+sha256   = "50b20a92e5cf836396d53f9599206e447bc16627dfb74a94a99cef5ae887d1f2"
 urls     = [
   "https://github.com/sipeed/slogic16u3-tools/releases/download/tools-2026.10/openFPGALoader-v1.1.1-windows-x86_64.exe",
 ]
