@@ -11,21 +11,36 @@ resources/
 ├── fixture/
 │   └── testgen.fs                # 信号源夹具（Tang Nano 9K）位流，各产品共用，入库
 ├── fixture.toml                  # 夹具 USB 身份（VID/PID + 序列号关键字），各产品共用，入库
-└── bin/                          # 跨平台工具二进制
-    ├── sigrok-cli-linux-x86_64            # sigrok-cli（须 SLogic 2.3.0 及以上）：Linux AppImage 重命名/软链
+├── tools.toml                    # 外部工具清单（版本 / sha256 / 下载地址），「环境准备」页据此下载，入库
+└── bin/                          # 跨平台工具二进制（除 libusb DLL 外都由「环境准备」页下载，不入库）
+    ├── sigrok-cli-linux-x86_64            # sigrok-cli（SLogic 2.3.2）：Linux AppImage
     ├── sigrok-cli-windows-x86_64.exe      #   Windows
-    ├── openFPGALoader/openFPGALoader.exe  # Windows：夹具位流载入（Linux 用发行版的 openFPGALoader）
-    └── libusb-1.0.dll                     # Windows：pyusb 后端（见下文跨平台）
+    ├── openFPGALoader/openFPGALoader      # Linux：夹具位流载入（全静态单文件）
+    ├── openFPGALoader/openFPGALoader.exe  # Windows：同上
+    ├── openFPGALoader/wdi-simple.exe      # Windows：一键给夹具 FTDI 装 WinUSB
+    └── libusb-1.0.dll                     # Windows：pyusb 后端（入库，见下文跨平台）
 ```
 
 空板的 JTAG 烧录（eFuse 密钥 + DFU 底包）不在本工具内，由另行提供的工具完成。
 
-## 放置示例（Linux 工位）
+## 外部工具：「环境准备」一键下载
 
-```bash
-# sigrok-cli（来自 SLogic 发布包，须 2.3.0 及以上：旧版 4ch@1400M 会回卷、8ch@800M 收不到数据）
-ln -sf /path/to/sigrok-cli-SLogic-2.3.0-linux-x86_64.AppImage resources/bin/sigrok-cli-linux-x86_64
-```
+sigrok-cli、openFPGALoader、wdi-simple（Windows）不随仓库/发布包分发。首次打开程序时，缺了
+必需的工具会自动展开底部的「环境准备」页，点「下载缺失的工具」即可：
+
+- 清单 `tools.toml` 为每个工具固定**版本、sha256 和下载地址**；先下到临时文件，**sha256 与
+  清单一致才放进 `bin/`**，不一致即丢弃——绝不运行未校验的文件。
+- 下载源：sigrok-cli 来自 [sipeed/SLogic 的 release-2.3.2](https://github.com/sipeed/SLogic/releases/tag/release-2.3.2)
+  （也列了 Sipeed 下载站）；openFPGALoader 和 wdi-simple 来自本仓库的
+  [tools-2026.10 Release](https://github.com/sipeed/slogic16u3-tools/releases/tag/tools-2026.10)
+  （来源、许可、构建方式见其说明）。页面上可选「自动 / GitHub 优先 / Sipeed 下载站优先」。
+- **Sipeed 下载站对大于 10 MB 的文件要图形验证码**，程序下载不了（sigrok-cli 两个平台都
+  超过 10 MB）。全部下载源都失败时，页面给出手动下载的链接、文件名和要保存到的路径。
+- 已有但 sha256 不同的文件（如手动放的旧版 sigrok-cli）显示「版本不同（可用，可更新）」，
+  照常使用；点「更新到清单版本」才替换。
+- 也可完全手动放置：按 `tools.toml` 的 `dest` 路径放好即可。
+- 升级某个工具：改 `tools.toml` 的 `urls` / `sha256`；`python -m slogicpt.tools --hash <文件>`
+  算 sha256。sigrok-cli 的 sha256 可直接取 GitHub release 页面给出的 digest。
 
 夹具位流 `fixture/testgen.fs` 随仓库分发，不用另外放置。更新夹具 RTL 后，把新构建的
 `impl/pnr/testgen.fs` 覆盖到这里并提交即可，32U3 / 16U3 档案都引用这一份。
@@ -96,7 +111,7 @@ GUI 顶栏的警告角标里的每一条都对应一个待放置/待确认项，
 
 | 警告 | 解决办法 |
 |---|---|
-| `未找到 sigrok-cli 二进制` | 按平台命名放入 `bin/`（见上文） |
+| `未找到 sigrok-cli 二进制` | 「环境准备」页点「下载缺失的工具」（见上文） |
 | `未找到 libusb 后端（libusb-1.0.dll）` | Windows：把 `libusb-1.0.dll` 放进 `bin/`（见跨平台一节），并给设备装 WinUSB 驱动 |
 
 夹具位流 `testgen.fs` 不在启动自检里：缺失时图案测试一步报"找不到夹具位流"。
@@ -110,7 +125,7 @@ GUI 顶栏的警告角标里的每一条都对应一个待放置/待确认项，
 
 - **Windows 夹具载入（openFPGALoader）**：夹具（Tang Nano 9K）的位流由 openFPGALoader 按
   USB bus/device 载入。工位放置：
-  1. 把 `openFPGALoader.exe` 放到 `bin/openFPGALoader/`。**这是一个静态单文件 exe，
+  1. `openFPGALoader.exe` 由「环境准备」页下载到 `bin/openFPGALoader/`（也可手动放）。**这是一个静态单文件 exe，
      不依赖任何第三方 DLL**（libusb/libftdi/zlib 及 C/C++ 运行库全部静态链接，仅用系统自带
      的 KERNEL32 / UCRT `api-ms-win-crt-*`），解压即用；
   2. **一次性**给夹具 FTDI 的 A 通道装 WinUSB 驱动——**推荐在 GUI 底部
@@ -124,7 +139,9 @@ GUI 顶栏的警告角标里的每一条都对应一个待放置/待确认项，
   > libusb-1.0 / zlib1 / libgcc / libstdc++ 共 5~6 个 DLL），**不是单文件**。此处的
   > 单文件 exe 是用同一份 v1.1.1 源码经 llvm-mingw(UCRT) 全静态交叉编译而来，行为一致。
 
-  **`bin/openFPGALoader/` 下两个二进制的来源/许可**（工位本地放置，不入库）：
+  **`bin/openFPGALoader/` 下二进制的来源/许可**（发布在 tools-2026.10 Release，不入库）：
+  - `openFPGALoader`（Linux）：同一份 v1.1.1 源码在 Alpine 3.20 里用 musl 全静态编译
+    （libusb 1.0.27 不带 udev、libftdi1 1.5），构建脚本 `build-openFPGALoader-linux.sh` 随 Release 发布。
   - `openFPGALoader.exe`：本体 Apache-2.0（[trabucayre/openFPGALoader](https://github.com/trabucayre/openFPGALoader)
     v1.1.1，**源码未改**）；静态链入 libusb-1.0 / libftdi1（LGPL-2.1）、zlib（Zlib 许可）。
     构建：llvm-mingw(UCRT) 交叉工具链 + 项目自带 `Toolchain-x86_64-w64-mingw32-clang.cmake`
@@ -160,8 +177,8 @@ GUI 顶栏的警告角标里的每一条都对应一个待放置/待确认项，
 | 项 | 放置 |
 |---|---|
 | Python（**仅源码运行时**需要，跑打包好的 exe 不需要） | **3.11 或更高**（依赖标准库 tomllib；低版本启动即报错退出） |
-| sigrok-cli | `bin/sigrok-cli-windows-x86_64.exe`（SLogic 2.3.0 及以上） |
-| openFPGALoader | `bin/openFPGALoader/openFPGALoader.exe` + 夹具 FTDI A 通道 WinUSB（「环境准备」一键部署） |
+| sigrok-cli / openFPGALoader / wdi-simple | 「环境准备」页「下载缺失的工具」自动放好 |
+| 夹具 FTDI A 通道 WinUSB | 「环境准备」页「部署」 |
 | libusb 后端 | `bin/libusb-1.0.dll`（推荐内置入库；`build.py` 自动打包进 exe）+ 设备 WinUSB 驱动（Zadig） |
 
 ## 打包分发

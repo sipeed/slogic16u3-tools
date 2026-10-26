@@ -103,7 +103,7 @@ jobs:
           if ! gh release create "${GITHUB_REF_NAME}" \
                 --repo "${GITHUB_REPOSITORY}" \
                 --title "${GITHUB_REF_NAME}" \
-                --notes "Automated portable bundles for ${GITHUB_REF_NAME} (Linux + Windows). Drop in platform tools (sigrok-cli, and openFPGALoader on Windows) per resources/README.md." \
+                --notes "Automated portable bundles for ${GITHUB_REF_NAME} (Linux + Windows). On first start the Environment Setup page downloads the external tools (sigrok-cli, openFPGALoader) listed in resources/tools.toml and checks their sha256." \
                 ${prerelease} \
                 bundles/*.zip; then
             echo "Release already exists; uploading assets instead."

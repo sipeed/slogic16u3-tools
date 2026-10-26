@@ -66,6 +66,7 @@ Sipeed SLogic 系列逻辑分析仪产线产测工具，**数据驱动多产品*
 │   │   └── icons.py     #     内嵌 SVG 图标
 │   ├── procutil.py      #   跨平台子进程：隐藏窗口、杀进程树、超时/取消运行器
 │   ├── env_setup.py     #   「环境准备」一键部署：Linux udev 规则 / Windows 夹具 FTDI 的 WinUSB 驱动
+│   ├── tools.py         #   外部工具清单（tools.toml）：状态检查、下载、sha256 校验
 │   ├── i18n.py, _translations.py  # 中英界面文案
 │   ├── pipeline.py      #   流程引擎：步骤表、链路门槛、采集瞬时错误重试、超时/人工提示
 │   ├── profiles.py      #   产品档案加载/校验/资源自检
@@ -77,7 +78,7 @@ Sipeed SLogic 系列逻辑分析仪产线产测工具，**数据驱动多产品*
 │   ├── fpga.py          #   夹具串口：切模式、存活检查
 │   ├── sigrok.py        #   sigrok-cli 采样封装（logic_channels 分组、回卷检测）
 │   └── waveform.py      #   波形拆包（任意通道数）与接线置换
-├── resources/           # 管理员资源：产品档案 / 夹具位流 / sigrok-cli（见其 README）
+├── resources/           # 管理员资源：产品档案 / 夹具位流 / 外部工具清单 tools.toml（见其 README）
 ├── out/                 # 运行时采样输出（自动创建，不入库）
 ├── build.py             # PyInstaller 单二进制打包
 ├── requirements.txt
@@ -89,18 +90,19 @@ Sipeed SLogic 系列逻辑分析仪产线产测工具，**数据驱动多产品*
 ```bash
 python -m venv .venv && source .venv/bin/activate   # Windows: .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt                     # 需 Python 3.11+
-# 放置 sigrok-cli（夹具位流已随仓库），见 resources/README.md
-python -m slogicpt                                  # 启动 GUI，点「开始」
+python -m slogicpt                                  # 启动 GUI
+# 首次启动会打开「环境准备」页：点「下载缺失的工具」（sigrok-cli / openFPGALoader），
+# 再点「部署」（Linux udev 规则 / Windows 夹具 WinUSB），然后点「开始」
 ```
 
 台架要点：
 
-- **sigrok-cli 须用 SLogic 2.3.0 及以上**：旧版在 4ch@1400M 会回卷到 1600M、8ch@800M 收不到数据。
+- **sigrok-cli 须用 SLogic 2.3.0 及以上**（清单固定 2.3.2）：旧版在 4ch@1400M 会回卷到 1600M、8ch@800M 收不到数据。
 - 产测台架不要接 Gowin 烧录器：它和夹具（BL702）同为 FTDI `0403:6010`，其 JTAG 操作还会干扰夹具 FPGA 的 SRAM 配置。
 - 产品识别：按 USB PID。
 - 夹具识别：VID/PID 与序列号关键字在 `resources/fixture.toml`（各产品共用）；换批次/换固件只改这个文件，不用改代码。
-- 夹具位流载入用 openFPGALoader：Linux 用发行版包；Windows 放 `resources/bin/openFPGALoader/openFPGALoader.exe`，
-  并在「环境准备」里一键给夹具 FTDI 装 WinUSB 驱动（见 resources/README.md）。
+- 外部工具（sigrok-cli 2.3.2、openFPGALoader 全静态版、Windows 的 wdi-simple）由「环境准备」页按
+  `resources/tools.toml` 下载并校验 sha256；Sipeed 下载站的大文件要验证码，下不动时页面给出手动下载指引。
 
 ## 命令行
 
@@ -115,6 +117,7 @@ python -m slogicpt.waveform      # 波形拆包自测
 python -m slogicpt.fpga          # 找到夹具串口并切换模式（需接夹具）
 python -m slogicpt.fixture       # 夹具载入自测
 python -m slogicpt.sigrok        # 查找 sigrok-cli、扫描并试采一次（需真机）
+python -m slogicpt.tools         # 下载校验自测（本地 HTTP 服务）+ 本机工具状态
 ```
 
 ## 打包分发
