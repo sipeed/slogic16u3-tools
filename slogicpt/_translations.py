@@ -421,6 +421,7 @@ ZH: dict[str, str] = {
         '发送 RECONFIG 后 {s} 秒内没有以 {mode} 模式重新出现（当前：{seen}）',
     'APP came back with another serial (firmware id) {a}, was {b}': '切回 APP 后序列号（固件标识）变了：{a}，原为 {b}',
     'nothing': '无',
+    '; the app firmware may be too old to support RECONFIG': '；app 固件可能太旧，不支持 RECONFIG 切换',
     '{mode} device back: {dev}': '{mode} 设备已就绪：{dev}',
     '[usb] reconfig needs dfu_pid': '[usb] reconfig 需要配置 dfu_pid',
     '[[plan]] is empty; there is nothing to test': '[[plan]] 为空，没有可测的内容',

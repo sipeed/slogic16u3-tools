@@ -527,9 +527,12 @@ class Pipeline:
             if board is None:
                 seen = ", ".join(str(d) for d in device_watch.scan_devices(
                     self._all_profiles or [p])) or t("nothing")
-                return fail(t("not back in {mode} mode within {s}s after RECONFIG "
-                              "(seen: {seen})").format(mode=to.value, s=f"{tmo:.0f}",
-                                                       seen=seen))
+                why = t("not back in {mode} mode within {s}s after RECONFIG "
+                        "(seen: {seen})").format(mode=to.value, s=f"{tmo:.0f}", seen=seen)
+                if frm is APP and alone(APP) is not None:
+                    # never left APP: an app firmware older than RECONFIG support
+                    why += t("; the app firmware may be too old to support RECONFIG")
+                return fail(why)
             legs.append(f"{frm.value}->{to.value} {time.time() - t0:.1f}s")
             self._log(t("{mode} device back: {dev}").format(mode=to.value, dev=board))
         if serial and board.serial != serial:
