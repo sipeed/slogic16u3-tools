@@ -370,10 +370,13 @@ ZH: dict[str, str] = {
     'input open?': '输入疑似开路',
     'shorted?': '疑似短路',
     'intermittent?': '疑似接触不良',
+    'threshold not applied': '阈值不生效',
     '{ch}: only narrow spikes, the level is never held -- the input looks open (solder joint, connector pin or input stage)':
         '{ch}：只有窄尖峰、电平保持不住——输入疑似开路（焊点、连接器针脚或输入级）',
     "{ch}: high during another channel's step -- {detail}": '{ch}：在别的通道的步内也是高电平——{detail}',
     '{ch}: missed its step in at least one turn -- intermittent contact?': '{ch}：至少有一圈没有拉高——疑似接触不良',
+    '{ch}: still reads high with the threshold above the logic level -- the input threshold does not follow its setting (threshold DAC / comparator reference)':
+        '{ch}：阈值高于逻辑高电平时仍读到高——输入阈值不跟随设置（阈值 DAC / 比较器参考）',
     'wiring: the two 8-channel groups swapped': '接线：两组 8 路对调',
     'wiring: wires crossed': '接线：有线交叉',
     'Wiring: every adjacent pair of channels is swapped (D0<->D1, D2<->D3, ...) -- the probe cable or adapter is probably plugged in flipped':

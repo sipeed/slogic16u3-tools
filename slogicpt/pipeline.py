@@ -107,7 +107,17 @@ FAULT_HINTS: dict[str, tuple[str, str]] = {
     "missed_turn": (
         "intermittent?",
         "{ch}: missed its step in at least one turn -- intermittent contact?"),
+    "threshold": (
+        "threshold not applied",
+        "{ch}: still reads high with the threshold above the logic level -- the "
+        "input threshold does not follow its setting (threshold DAC / comparator "
+        "reference)"),
 }
+
+# The mode whose capture is repeated with the threshold above logic high
+# ([capture] threshold_check_v): M5 holds several channels at 50 % on slow
+# edges, so a threshold that does not move is unmistakable there.
+THRESHOLD_CHECK_MODE = 5
 
 # M0 wiring diagnoses (checks.wiring_pattern): short label for the step note,
 # then the line for the log.
@@ -703,6 +713,7 @@ class Pipeline:
 
         verdicts_by_channel: dict[int, object] = {}
         extra: dict[str, object] = {}
+        normal_chans = None
         for vth, group in passes:
             self.cb.on_progress("M%d %s · %s @%.1fV" % (entry.mode, entry.label,
                                                         label, vth))
@@ -759,6 +770,31 @@ class Pipeline:
                 elif v.channel in group.channels:
                     v.detail = (v.detail + tag).strip()
                     verdicts_by_channel[v.channel] = v
+
+            if group is None:
+                normal_chans = getattr(self, "_last_chans", None)
+
+        vhi = self.profile.threshold_check_v
+        if entry.mode == THRESHOLD_CHECK_MODE and vhi and normal_chans is not None:
+            # the same signals once more with the threshold above logic high:
+            # the inputs must stop seeing them (checks.check_threshold_control)
+            self.cb.on_progress("M%d %s · %s @%.1fV" % (entry.mode, entry.label,
+                                                        label, vhi))
+            out_file = OUTPUT_DIR / ("%s_m%d_%dch_%s_%.1fV.bin"
+                                     % (self.profile.id, entry.mode, cfg.channels,
+                                        format_rate(cfg.samplerate_hz), vhi))
+            result = self._capture_retrying(cfg, vhi, str(n_samples), out_file,
+                                            "%s M%d threshold %.1fV"
+                                            % (self.profile.id, entry.mode, vhi))
+            if result is None:
+                self.report_lines.append("M%d %s @%.1fV: FAIL (%s)"
+                                         % (entry.mode, label, vhi, t("capture failed")))
+                return False
+            high = waveform.load_capture_file(result.out_file, cfg.channels,
+                                              result.unitsize)
+            v = checks.check_threshold_control(normal_chans, high, vhi)
+            v.channel_text = v.channel_text or v.kind
+            extra[v.kind] = v
 
         final = ([v for _c, v in sorted(verdicts_by_channel.items())]
                  + list(extra.values()))
@@ -894,6 +930,7 @@ class Pipeline:
         expects = patterns.expected(entry.mode, cfg.channels,
                                     cfg.samplerate_hz,
                                     window_s=eff_window_s)
+        self._last_chans = chans          # the threshold check compares against it
         verdicts = checks.evaluate(entry.mode, chans, expects, cfg.samplerate_hz)
         return True, verdicts
 

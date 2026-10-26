@@ -295,6 +295,37 @@ def _fmt_time(sec: float) -> str:
     return "%.0f ns" % (sec * 1e9) if sec < 10e-6 else "%.1f us" % (sec * 1e6)
 
 
+def check_threshold_control(normal: np.ndarray, high: np.ndarray,
+                            vth_high: float) -> Verdict:
+    """The input threshold must actually move: captured again with the
+    threshold above the 3.3 V logic high, every channel that was high a good
+    part of the time (>= 20 %) at the normal threshold must now read low
+    (< 5 % high).  A threshold DAC or comparator reference that does not
+    follow its setting passes every other mode -- 3.3 V logic clears 1.6 V
+    with room to spare -- and fails here.
+
+    Not "no edge at all": measured on a 16U3, fast edges overshoot past 5 V
+    and leave blips (under 1 % high on M3's SPI lines), so the share of time
+    high is judged, not the edge count."""
+    lo = normal.mean(axis=1)
+    hi = high.mean(axis=1)
+    ref = [c for c in range(min(len(lo), len(hi))) if lo[c] >= 0.20]
+    stuck = [c for c in ref if hi[c] >= 0.05]
+    want = "channels high >= 20 %% at the normal threshold read < 5 %% high at %.1f V" % vth_high
+    if not ref:
+        return Verdict(-1, False, "threshold", "no channel high >= 20 %", want,
+                       "nothing to compare against", reason="threshold")
+    if stuck:
+        return Verdict(-1, False, "threshold",
+                       " ".join("CH%d %.0f%%" % (c, hi[c] * 100) for c in stuck[:8]),
+                       want, "these inputs still read high above the logic level: "
+                       "their threshold does not follow the setting",
+                       channels=tuple(stuck), reason="threshold")
+    return Verdict(-1, True, "threshold",
+                   "%d channels dropped to <= %.1f %% high" % (len(ref), hi[ref].max() * 100),
+                   want, channels=tuple(ref))
+
+
 def check_order(measurements: list[Measurement], samples_per_step: float,
                 tol_steps: float = 0.5, period: int | None = None) -> Verdict:
     """M3: the one-hot pattern must visit CH0, CH1, ... in order.
@@ -803,6 +834,17 @@ def _selftest() -> int:
         fails += 0 if ok else 1
     v = check_walking_one(shorted, 200, 32)[4]
     print("   ", v.detail)
+
+    print("== threshold control ==")
+    sq = (np.arange(4000) // 100 % 2).astype(np.uint8)
+    normal = np.stack([sq, sq, np.zeros_like(sq)])
+    blips = np.zeros_like(sq); blips[::500] = 1                 # overshoot leftovers
+    for name, high, want in (("follows", np.stack([blips, 0 * sq, 0 * sq]), True),
+                             ("CH1 stuck", np.stack([0 * sq, sq, 0 * sq]), False)):
+        v = check_threshold_control(normal, high, 5.0)
+        ok = v.ok is want
+        print("  %-9s -> %s %s %s" % (name, v.ok, v.measured, "ok" if ok else "FAIL"))
+        fails += 0 if ok else 1
 
     print("== M0 wiring diagnosis ==")
     def firing(perm, period=32):
