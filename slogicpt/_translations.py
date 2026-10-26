@@ -368,6 +368,8 @@ ZH: dict[str, str] = {
     'Fixture driver': '夹具驱动',
     'Cancel': '取消',
     'Tools': '工具',
+    'Program version': '程序版本',
+    'Program: {v}': '程序版本: {v}',
     'Download missing tools': '下载缺失的工具',
     'Update to the listed builds': '更新到清单版本',
     'Download tools': '下载工具',

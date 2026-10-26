@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 
+from .. import version
 from ..i18n import t
 from ..pipeline import StepStatus
 
@@ -23,6 +24,7 @@ def render(ok: bool, detail: str, elapsed: float, profile,
     lines = [
         "==== " + t("SLogic Production Test Report") + " ====",
         t("Time: {ts}").format(ts=time.strftime('%Y-%m-%d %H:%M:%S')),
+        t("Program: {v}").format(v=version.get()),
         (t("Product: {name} ({id})").format(name=profile.display_name, id=profile.id)
          if profile else t("Product: -")),
         t("Device: {devs}").format(

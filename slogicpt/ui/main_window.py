@@ -20,7 +20,7 @@ from PyQt5.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
-from .. import env_setup
+from .. import env_setup, version
 from ..i18n import LANGS, get_language, set_language, t
 from ..pipeline import StepStatus, sequence_plan
 from ..profiles import OUTPUT_DIR, check_resources, load_profiles
@@ -30,6 +30,10 @@ from .station import StationController
 from .widgets import (Checklist, Chip, Drawer, GripSplitter, ModeMatrix,
                       ResultCard, Stepper,
                       button, label)
+
+
+def _title() -> str:
+    return "%s %s" % (t("SLogic Production Test"), version.get())
 
 
 def _linkify(text: str) -> str:
@@ -110,7 +114,7 @@ class MainWindow(QMainWindow):
         self._tool_hint = ""                # manual-download instructions after a failure
         ctl.refresh_tools()                 # after connecting, so its signal is not lost
 
-        self.setWindowTitle(t("SLogic Production Test"))
+        self.setWindowTitle(_title())
         self.setWindowIcon(icons.icon("usb", "primary", 64))
         self.setMinimumSize(960, 640)
         self._build()
@@ -197,6 +201,9 @@ class MainWindow(QMainWindow):
         h.setSpacing(12)
         title = label(t("SLogic Production Test"), "title")
         h.addWidget(title)
+        ver = label(version.get(), "secondary")
+        ver.setToolTip(t("Program version"))
+        h.addWidget(ver, 0, Qt.AlignBottom)
         h.addSpacing(12)
 
         h.addStretch(1)
@@ -390,7 +397,7 @@ class MainWindow(QMainWindow):
         self.log_box.setPlainText(log_text)
         self.log_box.moveCursor(QTextCursor.End)
         self.report_box.setPlainText(report_text)
-        self.setWindowTitle(t("SLogic Production Test"))
+        self.setWindowTitle(_title())
 
     # ============================================================ rendering
 

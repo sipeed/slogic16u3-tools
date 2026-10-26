@@ -58,7 +58,22 @@ def _windows_libusb_dll() -> Path | None:
     return None
 
 
+def _version() -> str:
+    """The version to freeze in: the release tag on CI (its checkout is
+    shallow, without tags), else `git describe`, else "dev"."""
+    if os.environ.get("GITHUB_REF_TYPE") == "tag" and os.environ.get("GITHUB_REF_NAME"):
+        return os.environ["GITHUB_REF_NAME"]
+    sys.path.insert(0, str(REPO))
+    from slogicpt.version import describe
+    return describe(REPO) or "dev"
+
+
 def build() -> int:
+    version = _version()
+    # read by slogicpt.version in the frozen program (gitignored)
+    (REPO / "slogicpt" / "_version.py").write_text(
+        f'VERSION = "{version}"\n', encoding="utf-8")
+    print(f"version: {version}")
     key = (platform.system(), platform.machine())
     name = NAME_BY_PLATFORM.get(key, f"slogic-pt-{key[0].lower()}-{key[1]}")
     cmd = [
