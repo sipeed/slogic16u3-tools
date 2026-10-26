@@ -45,7 +45,7 @@ id       = "openFPGALoader"
 name     = "openFPGALoader v1.1.1"
 platform = "linux"
 dest     = "bin/openFPGALoader/openFPGALoader"
-sha256   = "28c1d561d713bb445333225f8dea7c24f13fecdb698aa179ba9aa7ea1041ce7c"
+sha256   = "ad8d18f9e08232116c1740eee71f1c1e1d136d7fa8d511938df3083acf717c2b"
 urls     = [
   "https://github.com/sipeed/slogic16u3-tools/releases/download/tools-2026.10/openFPGALoader-v1.1.1-linux-x86_64",
 ]

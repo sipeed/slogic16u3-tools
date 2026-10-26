@@ -142,6 +142,10 @@ GUI 顶栏的警告角标里的每一条都对应一个待放置/待确认项，
   **`bin/openFPGALoader/` 下二进制的来源/许可**（发布在 tools-2026.10 Release，不入库）：
   - `openFPGALoader`（Linux）：同一份 v1.1.1 源码在 Alpine 3.20 里用 musl 全静态编译
     （libusb 1.0.27 不带 udev、libftdi1 1.5），构建脚本 `build-openFPGALoader-linux.sh` 随 Release 发布。
+    **加了一行修复**：上游 `Gowin::skip_checksum` 从未初始化，GW1N(R)-9 载入 SRAM 后做不做 CRC
+    校验取决于堆内存里的残留值——musl 下实测被跳过，工具因此判「未报告成功标记」。构造函数补上
+    `skip_checksum(false)` 后连载 5 次均 `CRC check: Success`。Windows 版（v1.1.1 原样）同样有这个
+    未初始化问题，目前碰巧读到 0、能正常校验。
   - `openFPGALoader.exe`：本体 Apache-2.0（[trabucayre/openFPGALoader](https://github.com/trabucayre/openFPGALoader)
     v1.1.1，**源码未改**）；静态链入 libusb-1.0 / libftdi1（LGPL-2.1）、zlib（Zlib 许可）。
     构建：llvm-mingw(UCRT) 交叉工具链 + 项目自带 `Toolchain-x86_64-w64-mingw32-clang.cmake`
