@@ -28,7 +28,7 @@ from typing import Callable
 
 from .i18n import t
 from .procutil import kill_tree, popen_kwargs  # noqa: F401  (re-exported)
-from .profiles import RESOURCES_DIR, format_rate
+from .profiles import RESOURCES_DIR, format_rate, parse_rate
 
 _PLATFORM_BINARIES = {
     ("Linux", "x86_64"): "sigrok-cli-linux-x86_64",
@@ -233,6 +233,16 @@ class SigrokCli:
         n_samples = len(payload) // unitsize
         if n_samples == 0:
             raise CaptureError(t("Capture data is less than one full sample"), output=text)
+        # sigrok-cli returns exactly --samples (measured at every size the plan
+        # uses); fewer means data was lost on the way and the window is short
+        try:
+            want = parse_rate(samples)
+        except ValueError:
+            want = 0
+        if want and n_samples < want:
+            raise CaptureError(t("Capture came back short: {got} of {want} samples "
+                                 "(data lost on the way?)").format(got=n_samples, want=want),
+                               output=text)
         return CaptureResult(
             out_file=out_file, unitsize=unitsize,
             num_channels=channels, samplerate_hz=samplerate_hz,

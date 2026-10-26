@@ -368,6 +368,7 @@ ZH: dict[str, str] = {
     'Fixture driver': '夹具驱动',
     'wiring: adjacent pairs swapped': '接线：相邻两路对调',
     'input open?': '输入疑似开路',
+    'Capture came back short: {got} of {want} samples (data lost on the way?)': '采集数据不完整：只收到 {got} / {want} 个采样点（传输中丢数据？）',
     'shorted?': '疑似短路',
     'intermittent?': '疑似接触不良',
     'threshold not applied': '阈值不生效',
