@@ -21,6 +21,7 @@ import time
 from PyQt5.QtCore import QObject, QTimer, pyqtSignal
 
 from .. import device_watch, env_setup, fpga
+from .. import tools as tools_mod
 from .. import pipeline as pipeline_mod
 from ..device_watch import Mode
 from ..i18n import t
@@ -44,6 +45,9 @@ class StationController(QObject):
     env_done = pyqtSignal(bool, str)             # ok, action
     reset_done = pyqtSignal()
     env_status_changed = pyqtSignal()            # env_status updated
+    tools_changed = pyqtSignal()                 # tool_status updated
+    tool_progress = pyqtSignal(str, int, int)    # tool name, bytes so far, total
+    tools_done = pyqtSignal(bool, object)        # all in place, manual hints
     _pl_finished = pyqtSignal(bool, str)
     _scanned = pyqtSignal(bool, object, object)  # backend ok, fixture ports, devices
 
@@ -64,6 +68,12 @@ class StationController(QObject):
         self._scanning = False                   # a device poll is in flight
         self._scan_again = False                 # ...and another was asked for
         self._closing = False                    # shutting down: workers stay quiet
+        # external binaries from resources/tools.toml; tool_status[i] is
+        # 'ok' | 'other' | 'missing' ('' = not checked yet), read off-thread
+        self.tools = tools_mod.load()
+        self.tool_status = [""] * len(self.tools)
+        self.downloading = False
+        self._dl_cancel = threading.Event()
         self._poll_thread: threading.Thread | None = None
         if sigrok is not None:
             threading.Thread(target=self._probe_sigrok, daemon=True).start()
@@ -229,6 +239,64 @@ class StationController(QObject):
         if self._scan_again:
             self._scan_again = False
             self.refresh_devices()
+
+    # ------------------------------------------------------------- tools
+
+    def tools_missing(self, required_only: bool = True) -> list[tools_mod.Tool]:
+        return [tl for tl, st in zip(self.tools, self.tool_status)
+                if st == "missing" and (tl.required or not required_only)]
+
+    def refresh_tools(self):
+        """Re-read which tools are in place (sha256 of ~50 MB: off the GUI
+        thread)."""
+        def worker():
+            st = [tools_mod.status(tl) for tl in self.tools]
+            self.tool_status = st
+            if not self._closing:
+                self.tools_changed.emit()
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def download_tools(self, prefer: str, also_other: bool = False):
+        """Fetch every missing tool (and, with also_other, those present in
+        another build) on a worker thread.  sigrok-cli is picked up as soon as
+        it lands, without a restart."""
+        if self.downloading or self.busy:
+            return
+        todo = [tl for tl, st in zip(self.tools, self.tool_status)
+                if st == "missing" or (also_other and st == "other")]
+        if not todo:
+            return
+        self.downloading = True
+        self._dl_cancel.clear()
+        self.log.emit("===== " + t("Download tools") + " =====")
+
+        def worker():
+            hints = []
+            for tl in todo:
+                ok = tools_mod.download(
+                    tl, self.log.emit, prefer=prefer, cancel=self._dl_cancel,
+                    progress=lambda got, total, n=tl.name: self.tool_progress.emit(
+                        n, got, total))
+                if not ok and not self._dl_cancel.is_set():
+                    hints.append(tools_mod.manual_hint(tl))
+            self.tool_status = [tools_mod.status(tl) for tl in self.tools]
+            if self.sigrok is None:
+                from ..sigrok import SigrokCli, find_sigrok_binary
+                found = find_sigrok_binary()
+                if found is not None:
+                    self.sigrok = SigrokCli(found)
+                    self._probe_sigrok()
+            self.downloading = False
+            if not self._closing:
+                self.tools_done.emit(not hints and not self._dl_cancel.is_set(), hints)
+                self.tools_changed.emit()
+                self.state_changed.emit()
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def cancel_download(self):
+        self._dl_cancel.set()
 
     def refresh_env_status(self):
         """Read env_status on a worker thread: at start-up, when the fixture

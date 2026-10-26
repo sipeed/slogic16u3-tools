@@ -14,8 +14,9 @@ from dataclasses import dataclass
 from PyQt5.QtCore import QSettings, QSize, Qt, QTimer
 from PyQt5.QtGui import QFontDatabase, QTextCursor
 from PyQt5.QtWidgets import (
-    QAction, QActionGroup, QApplication, QFrame, QHBoxLayout,
-    QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressBar,
+    QAction, QActionGroup, QApplication, QComboBox, QFrame, QHBoxLayout,
+    QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QScrollArea,
+    QSizePolicy,
     QVBoxLayout, QWidget,
 )
 
@@ -29,6 +30,13 @@ from .station import StationController
 from .widgets import (Checklist, Chip, Drawer, GripSplitter, ModeMatrix,
                       ResultCard, Stepper,
                       button, label)
+
+
+def _linkify(text: str) -> str:
+    """Escape `text` for a rich-text label and make its URLs clickable."""
+    import html
+    import re
+    return re.sub(r"(https?://[^\s<]+)", r"<a href='\1'>\1</a>", html.escape(text))
 
 
 def _clock(seconds: float) -> str:
@@ -95,6 +103,12 @@ class MainWindow(QMainWindow):
         ctl.board_removed.connect(lambda: self._set_caption("next"))
         ctl.env_done.connect(self._on_env_done)
         ctl.env_status_changed.connect(self._on_env_status)
+        ctl.tools_changed.connect(self._on_tools)
+        ctl.tool_progress.connect(self._on_tool_progress)
+        ctl.tools_done.connect(self._on_tools_done)
+        self._tools_guided = False          # opened the setup page once for missing tools
+        self._tool_hint = ""                # manual-download instructions after a failure
+        ctl.refresh_tools()                 # after connecting, so its signal is not lost
 
         self.setWindowTitle(t("SLogic Production Test"))
         self.setWindowIcon(icons.icon("usb", "primary", 64))
@@ -168,6 +182,7 @@ class MainWindow(QMainWindow):
 
         self._render_problem_chip()
         self._render_stats()
+        self._render_tools()
         self._layout_steps(force=True, keep_status=True)
         self._render_result()
         self._on_devices()
@@ -250,11 +265,47 @@ class MainWindow(QMainWindow):
         d.add_page(t("Run Log"), self._padded(self.log_box), clear)
 
         self.env_deploy_btn = self.env_remove_btn = None
+        page = QWidget()
+        v = QVBoxLayout(page)
+        v.setContentsMargins(16, 12, 16, 16)
+        v.setSpacing(12)
+        # 1. the external tools (resources/tools.toml)
+        v.addWidget(label(t("Tools"), "title"))
+        # one label per tool: a single wrapped rich-text label under-reports
+        # its height and clips its last line
+        self.tool_list = QVBoxLayout()
+        self.tool_list.setSpacing(4)
+        self._tool_rows: list = []
+        v.addLayout(self.tool_list)
+        row = QHBoxLayout()
+        self.tool_source = QComboBox()
+        for key, text in (("auto", t("Source: automatic")),
+                          ("github", t("Source: GitHub first")),
+                          ("sipeed", t("Source: Sipeed download site first"))):
+            self.tool_source.addItem(text, key)
+        saved = QSettings().value("tool_source", "auto")
+        self.tool_source.setCurrentIndex(max(0, self.tool_source.findData(saved)))
+        self.tool_source.currentIndexChanged.connect(
+            lambda _i: QSettings().setValue("tool_source", self.tool_source.currentData()))
+        self.tool_btn = button(t("Download missing tools"), "filled", "refresh")
+        self.tool_btn.clicked.connect(self._tool_action)
+        row.addWidget(self.tool_source)
+        row.addWidget(self.tool_btn)
+        row.addStretch(1)
+        v.addLayout(row)
+        self.tool_bar = QProgressBar()
+        self.tool_bar.setTextVisible(True)
+        self.tool_bar.hide()
+        v.addWidget(self.tool_bar)
+        self.tool_hint_lbl = label("", "secondary")
+        self.tool_hint_lbl.setTextFormat(Qt.RichText)
+        self.tool_hint_lbl.setWordWrap(True)
+        self.tool_hint_lbl.setOpenExternalLinks(True)
+        self.tool_hint_lbl.setTextInteractionFlags(Qt.TextBrowserInteraction)
+        self.tool_hint_lbl.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
+        v.addWidget(self.tool_hint_lbl)
+        # 2. the platform prerequisite (udev rule / WinUSB driver)
         if env_setup.requirement():
-            page = QWidget()
-            v = QVBoxLayout(page)
-            v.setContentsMargins(16, 12, 16, 16)
-            v.setSpacing(12)
             v.addWidget(label(t("Environment Setup (one-time) · {name}").format(
                 name=env_setup.title()), "title"))
             hint = label(env_setup.hint(), "secondary")
@@ -269,8 +320,13 @@ class MainWindow(QMainWindow):
             row.addWidget(self.env_remove_btn)
             row.addStretch(1)
             v.addLayout(row)
-            v.addStretch(1)
-            d.add_page(t("Environment Setup"), page)
+        v.addStretch(1)
+        # the drawer may be short: scroll rather than clip the hints
+        scroll = QScrollArea()
+        scroll.setWidget(page)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        self._env_page = d.add_page(t("Environment Setup"), scroll)
 
         self.drawer = d
         d.toggled.connect(self._on_drawer_toggled)
@@ -408,6 +464,7 @@ class MainWindow(QMainWindow):
         elif not ctl.armed and self._caption:
             self._set_caption("")
         self._update_enablement()
+        self._render_tools()           # no download while a test runs
 
     def _update_enablement(self):
         ctl = self.ctl
@@ -577,8 +634,14 @@ class MainWindow(QMainWindow):
         rows.append(("ok", t("Fixture"), ", ".join(ctl.fixture_port_list))
                     if ctl.fixture_port_list else
                     ("bad", t("Fixture"), t("not connected (Tang Nano 9K)")))
+        missing = ctl.tools_missing()
+        if missing:
+            rows.append(("bad", t("Tools"),
+                         t("missing {names}: download them on the Environment Setup page")
+                         .format(names=", ".join(tl.name for tl in missing))))
         if ctl.sigrok is None:
-            rows.append(("bad", "sigrok-cli", t("not found; see resources/README.md")))
+            if not missing:
+                rows.append(("bad", "sigrok-cli", t("not found; see resources/README.md")))
         else:
             rows.append(("ok", "sigrok-cli", ctl.sigrok_version or "…"))
         st = ctl.env_status
@@ -841,6 +904,83 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------ custom capture
 
     # ------------------------------------------------- environment setup
+
+    # ------------------------------------------------------------- tools
+
+    def _render_tools(self):
+        ctl = self.ctl
+        names = {"ok": t("ready"), "other": t("another build (works, can update)"),
+                 "missing": t("missing"), "": "…"}
+        colors = {"ok": theme.color("success"), "other": theme.color("warning"),
+                  "missing": theme.color("error"), "": theme.color("on_surface_variant")}
+        texts = ["<span style='color:%s'>●</span> <b>%s</b> — %s &nbsp;"
+                 "<span style='color:%s'>%s</span>"
+                 % (colors[st], tl.name, names[st], theme.color("on_surface_variant"),
+                    tl.dest.relative_to(tl.dest.parents[2])
+                    if len(tl.dest.parents) > 2 else tl.dest)
+                 for tl, st in zip(ctl.tools, ctl.tool_status)] or [t("No tools listed")]
+        while len(self._tool_rows) < len(texts):
+            lbl = label("", "secondary")
+            lbl.setTextFormat(Qt.RichText)
+            self.tool_list.addWidget(lbl)
+            self._tool_rows.append(lbl)
+        for lbl, text in zip(self._tool_rows, texts):
+            lbl.setText(text)
+        missing = [st for st in ctl.tool_status if st == "missing"]
+        other = [st for st in ctl.tool_status if st == "other"]
+        if ctl.downloading:
+            self.tool_btn.setText(t("Cancel"))
+            self.tool_btn.setEnabled(True)
+        else:
+            self.tool_btn.setText(t("Download missing tools") if missing or not other
+                                  else t("Update to the listed builds"))
+            self.tool_btn.setEnabled(bool(missing or other) and not ctl.busy)
+        self.tool_source.setEnabled(not ctl.downloading)
+        self.tool_hint_lbl.setText(self._tool_hint)
+        self.tool_hint_lbl.setVisible(bool(self._tool_hint))
+
+    def _tool_action(self):
+        ctl = self.ctl
+        if ctl.downloading:
+            ctl.cancel_download()
+            return
+        self._tool_hint = ""
+        self.tool_bar.setValue(0)
+        self.tool_bar.show()
+        ctl.download_tools(self.tool_source.currentData() or "auto",
+                           also_other="missing" not in ctl.tool_status)
+        self._render_tools()
+
+    def _on_tool_progress(self, name: str, got: int, total: int):
+        self.tool_bar.setRange(0, total or 0)
+        if total:
+            self.tool_bar.setValue(got)
+        self.tool_bar.setFormat("%s  %.1f / %s MB" % (
+            name, got / 1e6, "%.1f" % (total / 1e6) if total else "?"))
+
+    def _on_tools(self):
+        self._render_tools()
+        if self._result[0] in ("idle", "ready"):
+            self._render_result()
+        # first look after start-up: open the setup page if something required is missing
+        if not self._tools_guided and "" not in self.ctl.tool_status:
+            self._tools_guided = True
+            if self.ctl.tools_missing():
+                self.drawer.open(self._env_page)
+
+    def _on_tools_done(self, ok: bool, hints: list):
+        self.tool_bar.hide()
+        if hints:
+            self._tool_hint = (t("Some tools could not be downloaded. Get them by hand:")
+                               + "<br>" + "<br>".join(_linkify(h) for h in hints))
+        self.problems = [p for p in self.problems if "sigrok-cli" not in p.message]
+        if self.ctl.sigrok is None:
+            self.problems += check_resources(self.profiles, None)
+        self._render_problem_chip()
+        self._render_tools()
+        self._update_enablement()
+        self._append_log(t("Tools: all in place") if ok else
+                         t("Tools: some could not be downloaded, see the Environment Setup page"))
 
     def _env(self, action: str):
         self.env_deploy_btn.setEnabled(False)
