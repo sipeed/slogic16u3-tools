@@ -94,6 +94,24 @@ STEP_LABELS: dict[str, str] = {
 }
 
 
+# M0 wiring diagnoses (checks.wiring_pattern): short label for the step note,
+# then the line for the log.
+WIRING_HINTS: dict[str, tuple[str, str]] = {
+    "wiring_pairs": (
+        "wiring: adjacent pairs swapped",
+        "Wiring: every adjacent pair of channels is swapped (D0<->D1, D2<->D3, ...) "
+        "-- the probe cable or adapter is probably plugged in flipped"),
+    "wiring_groups8": (
+        "wiring: the two 8-channel groups swapped",
+        "Wiring: the two groups of 8 channels are swapped (D0..D7 <-> D8..D15) "
+        "-- swap the two 8-channel probe cables"),
+    "wiring": (
+        "wiring: wires crossed",
+        "Wiring: some wires are crossed between the fixture and the analyzer "
+        "(map below) -- check the probe cable"),
+}
+
+
 def _sequence_spec(profile: ProductProfile
                    ) -> list[tuple[str, str, str, tuple, bool]]:
     """(step id, label, Pipeline method, method args, abort_on_fail) of the
@@ -732,6 +750,14 @@ class Pipeline:
         good, passed, failed = checks.summarise(final)
         by_ch = {v.channel: v for v in final}
         for v in final:
+            if not v.ok and v.reason in WIRING_HINTS:
+                # M0 recognised a pure wire swap: say which, so the operator
+                # fixes the cable -- the verdict stays FAIL, nothing is remapped
+                short, long_ = WIRING_HINTS[v.reason]
+                v.channel_text = t(short)
+                self._log("     " + t(long_))
+                self._log("     " + t("Each analyzer input and the fixture channel it "
+                                      "receives: {map}").format(map=v.wiring))
             if not v.ok:
                 where = (v.channel_text if v.channel < 0
                          else "CH%d" % v.channel)

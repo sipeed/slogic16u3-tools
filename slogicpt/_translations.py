@@ -366,6 +366,16 @@ ZH: dict[str, str] = {
     'udev rule missing: deploy it on the Environment Setup page':
         '未部署 udev 规则：到「环境准备」页一键部署',
     'Fixture driver': '夹具驱动',
+    'wiring: adjacent pairs swapped': '接线：相邻两路对调',
+    'wiring: the two 8-channel groups swapped': '接线：两组 8 路对调',
+    'wiring: wires crossed': '接线：有线交叉',
+    'Wiring: every adjacent pair of channels is swapped (D0<->D1, D2<->D3, ...) -- the probe cable or adapter is probably plugged in flipped':
+        '接线：每相邻两路都对调了（D0<->D1、D2<->D3……）——探头排线或转接头很可能插反了',
+    'Wiring: the two groups of 8 channels are swapped (D0..D7 <-> D8..D15) -- swap the two 8-channel probe cables':
+        '接线：两组 8 路对调了（D0..D7 <-> D8..D15）——把两根 8 路探头线换过来',
+    'Wiring: some wires are crossed between the fixture and the analyzer (map below) -- check the probe cable':
+        '接线：夹具与分析仪之间有线交叉（对应关系见下）——请检查探头线',
+    'Each analyzer input and the fixture channel it receives: {map}': '分析仪各输入实际收到的夹具通道：{map}',
     'Switch to DFU and back to APP': '切换到 DFU 再切回 APP',
     'DFU/APP switch': 'DFU/APP 切换',
     'Switching {a} -> {b}': '正在切换 {a} -> {b}',
