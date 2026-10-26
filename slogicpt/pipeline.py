@@ -506,6 +506,19 @@ class Pipeline:
             return fail(t("No {name} running its app firmware was found").format(
                 name=p.display_name))
         serial = board.serial
+        need = p.reconfig_min_firmware
+        if need:
+            # the USB serial is the app firmware's id (YYYYMMDDhhmm), so the
+            # same length of digits compares as a date
+            if not (serial and serial.isdigit() and len(serial) == len(need)):
+                return fail(t("cannot read the app firmware id (USB serial {sn!r}) to "
+                              "check it supports RECONFIG").format(sn=serial))
+            if serial < need:
+                return fail(t("app firmware {sn} is older than {need}, the first to "
+                              "support RECONFIG: update the app firmware first")
+                            .format(sn=serial, need=need))
+            self._log(t("app firmware {sn} >= {need}: supports RECONFIG").format(
+                sn=serial, need=need))
         legs = []
         for frm, to in ((APP, DFU), (DFU, APP)):
             self.cb.on_progress(t("Switching {a} -> {b}").format(a=frm.value, b=to.value))
@@ -999,12 +1012,12 @@ if __name__ == "__main__":
                                timeouts=dataclasses.replace(p32.timeouts, mode_switch_s=1))
     real_reconfig = device_watch.reconfig
 
-    def trip_case(state: list, on_reconfig) -> bool:
+    def trip_case(state: list, on_reconfig, prof=None) -> bool:
         """state[0] = devices online now; on_reconfig(d) changes them."""
         device_watch.scan_devices = lambda _profiles: list(state[0])
         device_watch.reconfig = lambda d: (on_reconfig(d), "")[1]
         try:
-            pl = Pipeline(p32r, None, cb, [])
+            pl = Pipeline(prof or p32r, None, cb, [])
             pl._all_profiles = all_profiles
             return pl._mode_round_trip()
         finally:
@@ -1031,6 +1044,20 @@ if __name__ == "__main__":
     assert trip_case(st, flip(st, serial="OTHER")) is False  # other firmware id back
     st = [[at(Mode.APP, (2,)), at(Mode.APP, (3,))]]
     assert trip_case(st, flip(st)) is False                 # two boards
+
+    print("== RECONFIG 最低固件（假设备）==")
+    pmin = dataclasses.replace(p32r, reconfig_min_firmware="202610230648")
+    sent = []
+    for sn, want in (("202610220429", False),     # older: fails, nothing sent
+                     ("202610230648", True),      # the minimum itself
+                     ("202611010000", True),      # newer
+                     (None, False), ("SN", False)):  # unreadable id
+        st = [[dataclasses.replace(at(Mode.APP, (2,)), serial=sn)]]
+        sent.clear()
+        go = flip(st, serial=sn)
+        ok = trip_case(st, lambda d, go=go: (sent.append(d), go(d)), prof=pmin)
+        assert ok is want, (sn, ok)
+        assert bool(sent) is want, (sn, sent)   # no RECONFIG unless supported
 
     print("== 假步骤成功路径 ==")
     p = Pipeline(profile, None, cb, [

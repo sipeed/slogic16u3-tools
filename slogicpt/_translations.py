@@ -422,6 +422,11 @@ ZH: dict[str, str] = {
     'APP came back with another serial (firmware id) {a}, was {b}': '切回 APP 后序列号（固件标识）变了：{a}，原为 {b}',
     'nothing': '无',
     '; the app firmware may be too old to support RECONFIG': '；app 固件可能太旧，不支持 RECONFIG 切换',
+    "cannot read the app firmware id (USB serial {sn!r}) to check it supports RECONFIG":
+        '读不到 app 固件标识（USB 序列号 {sn!r}），无法确认是否支持 RECONFIG',
+    'app firmware {sn} is older than {need}, the first to support RECONFIG: update the app firmware first':
+        'app 固件 {sn} 早于支持 RECONFIG 的最低版本 {need}：请先升级 app 固件',
+    'app firmware {sn} >= {need}: supports RECONFIG': 'app 固件 {sn} >= {need}：支持 RECONFIG',
     '{mode} device back: {dev}': '{mode} 设备已就绪：{dev}',
     '[usb] reconfig needs dfu_pid': '[usb] reconfig 需要配置 dfu_pid',
     '[[plan]] is empty; there is nothing to test': '[[plan]] 为空，没有可测的内容',

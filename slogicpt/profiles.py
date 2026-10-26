@@ -239,6 +239,9 @@ class ProductProfile:
     # the board switches APP <-> DFU on a USB RECONFIG request ([usb] reconfig);
     # the test then starts with a round trip through DFU
     reconfig: bool = False
+    # the oldest app firmware that supports RECONFIG, as its USB serial (the
+    # firmware id, YYYYMMDDhhmm); an older board fails before any RECONFIG
+    reconfig_min_firmware: str | None = None
     # M5 is captured once more at this threshold, above logic high, and the
     # inputs must stop seeing the signals ([capture] threshold_check_v); None = off
     threshold_check_v: float | None = None
@@ -442,6 +445,8 @@ def _parse_profile(product_dir: Path,
             app_pid=int(usb["app_pid"]),
             links=_parse_links(usb),
             reconfig=bool(usb.get("reconfig", False)),
+            reconfig_min_firmware=(str(usb["reconfig_min_firmware"])
+                                   if "reconfig_min_firmware" in usb else None),
             threshold_check_v=(float(capture["threshold_check_v"])
                                if "threshold_check_v" in capture else None),
             dfu_pid=int(dfu_pid) if dfu_pid is not None else None,

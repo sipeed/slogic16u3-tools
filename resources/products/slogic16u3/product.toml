@@ -17,10 +17,13 @@ vid = 0x359F
 app_pid = 0x3031             # 应用固件运行时的 PID
 dfu_pid = 0x30F1             # 16U3 DFU PID（32U3 用 0x30F2 区分）；用于识别"还在 DFU、没烧 app 固件"的板子
 links = ["5G"]               # 产测工位链路（逐轮）；达不到 5G 直接 FAIL。16U3 400 MB/s，5G 足够
-# 新款 app 固件（2026-10-23 起）支持 USB RECONFIG 双向切换 APP <-> DFU：产测第一步先切到
-# DFU 再切回 APP（同 32U3，判据见 slogic32u3/product.toml）。旧固件不支持，这一步会 FAIL
-# 并提示固件太旧。实测新固件：连续 6 次来回各约 1.3 s，切回后仍 5G、采集正常。
+# 新款 app 固件支持 USB RECONFIG 双向切换 APP <-> DFU：产测第一步先切到 DFU 再切回 APP
+# （同 32U3，判据见 slogic32u3/product.toml）。实测：连续 6 次来回各约 1.3 s，切回后仍
+# 5G、采集正常。
 reconfig = true
+# 支持 RECONFIG 的最低 app 固件（USB 序列号即固件标识 YYYYMMDDhhmm）。更旧的板子不发
+# RECONFIG，这一步直接 FAIL 并提示先升级 app 固件。
+reconfig_min_firmware = "202610230648"
 
 # ---------------------------------------------------------------------------
 # 夹具信号源（与 32U3 相同，说明见 slogic32u3/product.toml）
