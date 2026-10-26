@@ -1,0 +1,78 @@
+# 产测工具依赖的外部二进制：「环境准备」页按本清单下载、校验后放进 resources/。
+#
+# 每项固定版本和 sha256：下载内容与 sha256 不符一律丢弃，绝不运行未校验的文件。
+# 升级某个工具 = 改这里的 urls / sha256（维护脚本：python -m slogicpt.tools --hash <file>）。
+#
+#   platform  linux | windows（只在对应平台上需要）
+#   dest      相对 resources/ 的目标路径（与代码里查找的位置一致）
+#   urls      按顺序尝试的下载地址；「环境准备」页可选先走 GitHub 还是 Sipeed 下载站
+#   manual    全部下载失败时提示用户手动下载的页面
+#   required  缺了就不能产测（true），或只影响部分功能（false）
+#
+# Sipeed 下载站对大于 10 MB 的文件要图形验证码，程序下载不了（返回 "This is a
+# large file"），会提示用户去 manual 页面手动下载，再放到 dest。
+schema_version = 1
+
+[[tool]]
+id       = "sigrok-cli"
+name     = "sigrok-cli (SLogic 2.3.2)"
+platform = "linux"
+dest     = "bin/sigrok-cli-linux-x86_64"
+sha256   = "788dcaaaffe13762d97d3ba4e476a030e922b0d46a5dd9ff9221907ab405941d"
+urls     = [
+  "https://github.com/sipeed/SLogic/releases/download/release-2.3.2/sigrok-cli-SLogic-2.3.2-linux-x86_64.AppImage",
+  "https://dl.sipeed.com/SLogic/Software/release-2.3.2/sigrok-cli-SLogic-2.3.2-linux-x86_64.AppImage",
+]
+manual   = "https://dl.sipeed.com/shareURL/SLogic/Software/release-2.3.2"
+required = true
+
+[[tool]]
+id       = "sigrok-cli"
+name     = "sigrok-cli (SLogic 2.3.2)"
+platform = "windows"
+dest     = "bin/sigrok-cli-windows-x86_64.exe"
+sha256   = "6a9f146db0400e90630028d41ab0656f77e8f3b24ac02083fdd7a95ab807f76e"
+urls     = [
+  "https://github.com/sipeed/SLogic/releases/download/release-2.3.2/sigrok-cli-SLogic-2.3.2-windows-x86_64.exe",
+  "https://dl.sipeed.com/SLogic/Software/release-2.3.2/sigrok-cli-SLogic-2.3.2-windows-x86_64.exe",
+]
+manual   = "https://dl.sipeed.com/shareURL/SLogic/Software/release-2.3.2"
+required = true
+
+# openFPGALoader v1.1.1 全静态单文件版（本仓库 tools-2026.10 Release，来源与构建方式见其说明）
+[[tool]]
+id       = "openFPGALoader"
+name     = "openFPGALoader v1.1.1"
+platform = "linux"
+dest     = "bin/openFPGALoader/openFPGALoader"
+sha256   = "28c1d561d713bb445333225f8dea7c24f13fecdb698aa179ba9aa7ea1041ce7c"
+urls     = [
+  "https://github.com/sipeed/slogic16u3-tools/releases/download/tools-2026.10/openFPGALoader-v1.1.1-linux-x86_64",
+]
+manual   = "https://github.com/sipeed/slogic16u3-tools/releases/tag/tools-2026.10"
+required = true
+
+[[tool]]
+id       = "openFPGALoader"
+name     = "openFPGALoader v1.1.1"
+platform = "windows"
+dest     = "bin/openFPGALoader/openFPGALoader.exe"
+sha256   = "2aee62bce14f40d9e50c22a914f3aa18597eee6517e384b01bdcf0b5b71453e8"
+urls     = [
+  "https://github.com/sipeed/slogic16u3-tools/releases/download/tools-2026.10/openFPGALoader-v1.1.1-windows-x86_64.exe",
+]
+manual   = "https://github.com/sipeed/slogic16u3-tools/releases/tag/tools-2026.10"
+required = true
+
+# libwdi 的 CLI 示例：「环境准备」一键给夹具 FTDI 装 WinUSB 驱动时用
+[[tool]]
+id       = "wdi-simple"
+name     = "wdi-simple (libwdi)"
+platform = "windows"
+dest     = "bin/openFPGALoader/wdi-simple.exe"
+sha256   = "d13fddb266b730ae1234a491922deb5e879c1a5e70576eb18d9442be70b03072"
+urls     = [
+  "https://github.com/sipeed/slogic16u3-tools/releases/download/tools-2026.10/wdi-simple.exe",
+]
+manual   = "https://github.com/sipeed/slogic16u3-tools/releases/tag/tools-2026.10"
+required = false

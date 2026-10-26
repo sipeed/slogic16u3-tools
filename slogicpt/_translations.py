@@ -366,6 +366,13 @@ ZH: dict[str, str] = {
     'udev rule missing: deploy it on the Environment Setup page':
         '未部署 udev 规则：到「环境准备」页一键部署',
     'Fixture driver': '夹具驱动',
+    'Download {file} from {page} and save it as {dest}': '从 {page} 下载 {file}，保存为 {dest}',
+    'Downloading {name} from {url}': '下载 {name}：{url}',
+    'connection dropped at {got} of {total} bytes': '连接中断（{got} / {total} 字节）',
+    'failed: {e}': '失败：{e}',
+    'sha256 does not match the manifest (got {h}…)': 'sha256 与清单不符（得到 {h}…）',
+    'the site asks for a captcha; download it by hand': '下载站要求验证码，请手动下载',
+    'verified (sha256 {h}…) -> {dest}': '校验通过（sha256 {h}…）-> {dest}',
     'wiring: adjacent pairs swapped': '接线：相邻两路对调',
     'input open?': '输入疑似开路',
     'Capture came back short: {got} of {want} samples (data lost on the way?)': '采集数据不完整：只收到 {got} / {want} 个采样点（传输中丢数据？）',
