@@ -202,6 +202,99 @@ def check_duty(m: Measurement, exp: Expect, tol_pp: float) -> Verdict:
                    "%.2f%%" % want, "%+.2f pp" % (m.duty_pct - want))
 
 
+def _high_runs(x: np.ndarray, bridge: int) -> list[tuple[int, int]]:
+    """(start, end) sample indices of the high runs of a 0/1 array, with low
+    dips shorter than `bridge` samples closed first -- so a glitch inside a
+    real high (the 1.8 V bank read at 1.5 V) does not split it in two."""
+    d = np.diff(np.concatenate(([0], x.astype(np.int8), [0])))
+    starts = np.flatnonzero(d == 1)
+    ends = np.flatnonzero(d == -1)
+    runs: list[list[int]] = []
+    for a, b in zip(starts.tolist(), ends.tolist()):
+        if runs and a - runs[-1][1] < bridge:
+            runs[-1][1] = b
+        else:
+            runs.append([a, b])
+    return [(a, b) for a, b in runs]
+
+
+def check_walking_one(channels: np.ndarray, samples_per_step: float,
+                      period: int, step_s: float = 100e-6) -> list[Verdict | None]:
+    """M0, channel by channel: each one must be high for exactly one step of
+    the rotation, once per turn.  check_order only looks at WHEN each channel
+    first rises, which an input that is broken but still couples its edges
+    through passes.  Three failures are named:
+
+      open_input  edges but no high lasting half a step.  Measured on a 16U3
+                  with a broken CH13: every high was 85-90 ns although the
+                  fixture held it for 100 us -- the edges leak through the
+                  open input's stray capacitance, the level never does.
+      short       a high lasting 1.5 steps or more: it is also high during a
+                  neighbour's step, i.e. bridged to it (named when found).
+      missed_turn a turn in which the channel should have gone high and did
+                  not, inside the window: an intermittent contact.
+
+    A channel with no edge at all is left to check_order (None here).
+    Glitches are deliberately not judged: the 32U3's 1.8 V bank is read at
+    1.5 V in M0 and glitches there on a good board."""
+    n, total = channels.shape
+    step = samples_per_step
+    turn = period * step
+    runs = [_high_runs(channels[c], max(1, int(step * 0.01))) for c in range(n)]
+    # main highs: the ones at least half a step long, that is the real steps
+    mains = [[(a, b) for a, b in r if b - a >= 0.5 * step] for r in runs]
+    out: list[Verdict | None] = []
+    for c in range(n):
+        r, m = runs[c], mains[c]
+        inner = [(a, b) for a, b in r if a > 0 and b < total]  # not cut by the window
+        if not r or (len(r) == 1 and not inner and r[0][1] - r[0][0] >= total - 1):
+            out.append(None)                                 # static: check_order's
+            continue
+        want = "high for 1 step (%.0f us) once per %d-step turn" % (step_s * 1e6, period)
+        widest = max(b - a for a, b in (inner or r))
+        if not m:
+            out.append(Verdict(c, False, "walking-one",
+                               "widest high %s" % _fmt_time(widest / step * step_s),
+                               want, "edges come through but no level is held: "
+                               "the input looks open", reason="open_input"))
+            continue
+        long_ = [(a, b) for a, b in m if b - a >= 1.5 * step and a > 0 and b < total]
+        if long_:
+            a, b = long_[0]
+            # the channel(s) high at the same time over at least half a step
+            mates = [d for d in range(n) if d != c and any(
+                min(b, b2) - max(a, a2) >= 0.5 * step for a2, b2 in mains[d])]
+            out.append(Verdict(c, False, "walking-one",
+                               "high for %.1f steps" % ((b - a) / step), want,
+                               "also high during another channel's step: "
+                               "shorted to " + (" ".join("CH%d" % d for d in mates)
+                                                or "a neighbour") + "?",
+                               reason="short"))
+            continue
+        # a turn missed between two highs, or before the first / after the
+        # last where a whole step would still have fitted in the window
+        starts = [a for a, b in m]
+        margin = 0.1 * step
+        missed = 0
+        for s0, s1 in zip(starts, starts[1:]):
+            missed += max(0, round((s1 - s0) / turn) - 1)
+        if starts:
+            missed += int(max(0.0, starts[0] - margin) // turn)
+            missed += int(max(0.0, total - step - margin - starts[-1]) // turn)
+        if missed:
+            out.append(Verdict(c, False, "walking-one",
+                               "%d turn(s) without a high" % missed, want,
+                               "the channel missed its step: intermittent contact?",
+                               reason="missed_turn"))
+            continue
+        out.append(Verdict(c, True, "walking-one", "1 step per turn", want))
+    return out
+
+
+def _fmt_time(sec: float) -> str:
+    return "%.0f ns" % (sec * 1e9) if sec < 10e-6 else "%.1f us" % (sec * 1e6)
+
+
 def check_order(measurements: list[Measurement], samples_per_step: float,
                 tol_steps: float = 0.5, period: int | None = None) -> Verdict:
     """M3: the one-hot pattern must visit CH0, CH1, ... in order.
@@ -604,6 +697,12 @@ def evaluate(mode: int, channels: np.ndarray, expects: list[Expect],
         from .patterns import WIRING_STEP_S, WIRING_STEPS
         structured.append(check_order(ms, samples_per_step=WIRING_STEP_S * sample_rate_hz,
                                       period=WIRING_STEPS))
+        # each channel's own step: an open input or a bridge to a neighbour
+        # passes the order check, not this one
+        for c, v in enumerate(check_walking_one(channels, WIRING_STEP_S * sample_rate_hz,
+                                                WIRING_STEPS, WIRING_STEP_S)):
+            if v is not None and c < len(per_ch):
+                per_ch[c] = v
     elif mode in (1, 2, 3, 4):
         structured.extend(_spi_bank_verdicts(channels, sample_rate_hz, mode))
         if mode == 4:
@@ -680,6 +779,30 @@ def _selftest() -> int:
         print("  constant %d -> static=%s toggling=%s" % (lvl, m.static, m.toggling))
         if m.static != lvl or m.toggling:
             print("  FAIL"); fails += 1
+
+    print("== M0 walking one, channel by channel ==")
+    def rotation(n=16, step=200, period=32, total=10_000, start=3):
+        t = np.arange(total)
+        return np.stack([(((t // step) + start) % period == c).astype(np.uint8)
+                         for c in range(n)])
+    good = rotation()
+    opened = good.copy()                       # CH13: only an 18-sample blip per edge
+    for k in np.flatnonzero(np.diff(good[13].astype(np.int8)) == 1) + 1:
+        opened[13, k:k + 200] = 0
+        opened[13, k:k + 18] = 1
+    shorted = good.copy(); shorted[5] |= good[4]; shorted[4] |= good[5]
+    missed = good.copy()
+    k = int(np.flatnonzero(good[7])[0]); missed[7, k:k + 200] = 0
+    for name, chans, want in (("good", good, {}), ("open CH13", opened, {13: "open_input"}),
+                              ("CH4/CH5 bridged", shorted, {4: "short", 5: "short"}),
+                              ("CH7 misses a turn", missed, {7: "missed_turn"})):
+        got = {v.channel: v.reason for v in check_walking_one(chans, 200, 32)
+               if v is not None and not v.ok}
+        ok = got == want
+        print("  %-18s -> %s %s" % (name, got or "all ok", "ok" if ok else "FAIL"))
+        fails += 0 if ok else 1
+    v = check_walking_one(shorted, 200, 32)[4]
+    print("   ", v.detail)
 
     print("== M0 wiring diagnosis ==")
     def firing(perm, period=32):

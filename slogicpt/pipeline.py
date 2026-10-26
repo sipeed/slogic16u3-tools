@@ -94,6 +94,21 @@ STEP_LABELS: dict[str, str] = {
 }
 
 
+# Faults named by a check's `reason`: short label (step note, report), then
+# the log line ({ch} = the channel(s), {detail} = the check's own detail).
+FAULT_HINTS: dict[str, tuple[str, str]] = {
+    "open_input": (
+        "input open?",
+        "{ch}: only narrow spikes, the level is never held -- the input looks open "
+        "(solder joint, connector pin or input stage)"),
+    "short": (
+        "shorted?",
+        "{ch}: high during another channel's step -- {detail}"),
+    "missed_turn": (
+        "intermittent?",
+        "{ch}: missed its step in at least one turn -- intermittent contact?"),
+}
+
 # M0 wiring diagnoses (checks.wiring_pattern): short label for the step note,
 # then the line for the log.
 WIRING_HINTS: dict[str, tuple[str, str]] = {
@@ -758,6 +773,13 @@ class Pipeline:
                 self._log("     " + t(long_))
                 self._log("     " + t("Each analyzer input and the fixture channel it "
                                       "receives: {map}").format(map=v.wiring))
+            kind = v.kind
+            if not v.ok and v.reason in FAULT_HINTS:
+                # name the likely fault in the operator's words (note + report)
+                short, long_ = FAULT_HINTS[v.reason]
+                kind = t(short)
+                where_ = v.channel_text if v.channel < 0 else "CH%d" % v.channel
+                self._log("     " + t(long_).format(ch=where_, detail=v.detail))
             if not v.ok:
                 where = (v.channel_text if v.channel < 0
                          else "CH%d" % v.channel)
@@ -773,7 +795,7 @@ class Pipeline:
                     if good_ones:
                         ok_in = ", ".join("CH%d" % c for c in good_ones)
                 self.failures.append((
-                    "M%d %s" % (entry.mode, entry.label), where, v.kind,
+                    "M%d %s" % (entry.mode, entry.label), where, kind,
                     v.measured, v.expected, ok_in))
         self._log(t("   {label}: {verdict}  ({p} ok / {f} fail)").format(
             label=label, verdict="PASS" if good else "FAIL",
