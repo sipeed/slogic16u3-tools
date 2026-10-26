@@ -885,4 +885,5 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, e):
         self.ctl.disarm()
+        self.ctl.shutdown()
         super().closeEvent(e)

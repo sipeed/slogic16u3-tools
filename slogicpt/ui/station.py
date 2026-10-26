@@ -63,6 +63,8 @@ class StationController(QObject):
         self.env_status = "unknown"
         self._scanning = False                   # a device poll is in flight
         self._scan_again = False                 # ...and another was asked for
+        self._closing = False                    # shutting down: workers stay quiet
+        self._poll_thread: threading.Thread | None = None
         if sigrok is not None:
             threading.Thread(target=self._probe_sigrok, daemon=True).start()
         self.profile: ProductProfile | None = None   # last recognised board
@@ -73,6 +75,12 @@ class StationController(QObject):
         self.reset_done.connect(self._on_reset_done)
         self._scanned.connect(self._apply_scan)
         self.refresh_env_status()
+        # a poll still running while the interpreter tears Qt down crashed the
+        # process on exit (seen in the offscreen smoke test); stop it first
+        import atexit
+        import weakref
+        me = weakref.ref(self)
+        atexit.register(lambda: me() is not None and me().shutdown())
 
         self._device_timer = QTimer(self)
         self._device_timer.timeout.connect(self.refresh_devices)
@@ -163,6 +171,20 @@ class StationController(QObject):
         return (self.profiles[0].signal_source.usb if self.profiles
                 else fpga.FixtureUsb())
 
+    def shutdown(self) -> None:
+        """Stop polling and wait (briefly) for a poll in flight, so no worker
+        thread emits into objects that are being destroyed."""
+        if self._closing:
+            return
+        self._closing = True
+        try:
+            self._device_timer.stop()
+        except RuntimeError:                      # C++ object already gone
+            pass
+        t = self._poll_thread
+        if t is not None and t.is_alive():
+            t.join(timeout=3)
+
     def refresh_devices(self):
         """Poll the USB analyzers and the fixture.  The scan runs on a worker
         thread -- it repeats every 1.5 s, and pyusb plus the serial-port
@@ -170,6 +192,8 @@ class StationController(QObject):
         result is applied on the GUI thread (_apply_scan), which also drives
         the armed state machine (a new board starts a run, its removal
         re-arms)."""
+        if self._closing:
+            return
         if self._scanning:
             self._scan_again = True
             return
@@ -182,10 +206,13 @@ class StationController(QObject):
                 ports = fpga.fixture_ports(self._fixture_usb())
                 found = device_watch.scan_devices(self.profiles) if ok else []
             except Exception as e:                          # noqa: BLE001
-                self.log.emit(f"[poll] {e}")
-            self._scanned.emit(ok, ports, found)
+                if not self._closing:
+                    self.log.emit(f"[poll] {e}")
+            if not self._closing:
+                self._scanned.emit(ok, ports, found)
 
-        threading.Thread(target=worker, daemon=True).start()
+        self._poll_thread = threading.Thread(target=worker, daemon=True)
+        self._poll_thread.start()
 
     def _apply_scan(self, ok: bool, ports: list, found: list):
         self._scanning = False
@@ -215,7 +242,8 @@ class StationController(QObject):
             except Exception:                               # noqa: BLE001
                 st = "unknown"
             self.env_status = st
-            self.env_status_changed.emit()
+            if not self._closing:
+                self.env_status_changed.emit()
 
         threading.Thread(target=worker, daemon=True).start()
 
