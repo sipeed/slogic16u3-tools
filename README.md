@@ -52,6 +52,30 @@ Sipeed SLogic 系列逻辑分析仪产线产测工具，**数据驱动多产品*
   不写夹具 Flash：openFPGALoader 写 GW1NR-9C 片上 Flash 报 `CRC check : FAIL`，写后不启动。
 - 结果只在界面显示（报告区可一键复制），不存档。
 
+### 压力测试（32U3）
+
+顶栏「复位」左边的**模式**下拉框选「压力测试」（只有档案里写了 `[soak]` 的产品可用，目前是 32U3），
+旁边出现**时长**下拉框（1 / 2 / 3 / 5 / 8 / 10 / 15 / 20 / 30 分钟 / 直到停止，会记住），
+开始按钮变成「开始压测」：
+
+1. 只连一块被测板（APP 模式），**不需要夹具**；
+2. 选时长，点「开始压测」：先检查链路（1 台、APP 模式；10G 和 5G 都可以），再按当前链路选 `[soak] configs`
+   （32U3：10G 下 32ch@200M，5G 下 32ch@100M），做**两段一次跑完的连续采集**，各持续所选时长：
+   - **Emulation 段**（分析仪板载图案）：数据边收边逐样本对照 `emulation` 规则，错、少、多都能定位到
+     第几个样本；同时要求实测速率 ≥ 90 %；
+   - **Normal 段**（输入悬空）：样本数完整、`end=ok`、USB 传输队列够深、实测速率 ≥ 90 %
+     （速率取 libsigrok 的 `slogic-report`）。
+   所以选 10 分钟 = Emulation 连续 10 分钟 + Normal 连续 10 分钟，共约 20 分钟。
+3. 进行中卡片显示「Emulation · 12.3 / 48.0 GB」这样的进度；运行日志记录每段的开始与结果；
+4. 结论：**只要没出现失败的段就 PASS**——跑满时长、或中途按「停止」，都是正常结束；
+   只有采集失败（样本错位、丢数据、速率不够、`end` 不是 ok）才是 FAIL。
+
+32ch@200M 下每秒 800 MB、1 分钟 48 GB，所以数据**只经管道在内存里边收边校验**，不落盘
+（长时间写盘会是 TB 级）。理论上一段 30 分钟要流过 1.4 TB，不会占用 1.4 TB 内存。
+压力测试不计入「本次启动」的产测通过/失败计数；切回「产测」即恢复布防流程；
+程序每次启动都在「产测」模式。判定逻辑移植自 SLogic 仓库
+`build/bench/slogic_selftest.py --soak`，需要 SLogic 2.3.0 及以上的 sigrok-cli。
+
 ## 目录结构
 
 ```
@@ -72,6 +96,7 @@ Sipeed SLogic 系列逻辑分析仪产线产测工具，**数据驱动多产品*
 │   ├── profiles.py      #   产品档案加载/校验/资源自检
 │   ├── device_watch.py  #   USB 设备检测（产品 + APP/DFU 模式 + 链路速率）
 │   ├── patterns.py      #   夹具图案的期望值（唯一权威，由 RTL 推导）
+│   ├── soak.py          #   压力测试判定：连续采集边收边逐样本校验、Normal 速率/完整性（移植自 slogic_selftest --soak）
 │   ├── checks.py        #   判定层：逐通道 + 结构化判定（不滤波；判不了即 FAIL）
 │   ├── deep_checks.py   #   内容级检查：SPI/I2C/UART 解码、突发包络
 │   ├── fixture.py       #   夹具（Tang Nano 9K）位流载入 SRAM（本次启动首次用到时 / 不应答时）
@@ -109,7 +134,8 @@ python -m slogicpt                                  # 启动 GUI
 ```bash
 python -m slogicpt.profiles      # 档案加载与资源自检
 python -m slogicpt.device_watch  # 设备插拔监视（含链路速率）
-python -m slogicpt.pipeline      # 流程引擎自测（步骤表、链路判据）
+python -m slogicpt.pipeline      # 流程引擎自测（步骤表、链路判据、压力测试两段采集）
+python -m slogicpt.soak          # 压力测试判定自测（流式逐样本、错位/丢失、速率、slogic-report）
 python -m slogicpt.patterns      # 夹具图案期望值自测
 python -m slogicpt.checks        # 判定层自测
 python -m slogicpt.deep_checks   # SPI/I2C/UART 解码、突发包络自测

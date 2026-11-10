@@ -30,6 +30,11 @@ from .i18n import t
 from .procutil import kill_tree, popen_kwargs  # noqa: F401  (re-exported)
 from .profiles import RESOURCES_DIR, format_rate, parse_rate
 
+# 4 MiB per read: at 32ch@200M (800 MB/s) that is 200 reads a second, and the
+# per-chunk comparison in the verifier still runs at line speed.
+CHUNK_BYTES = 4 << 20
+STDERR_KEEP = 256 << 10          # tail of sigrok's log kept per soak capture
+
 _PLATFORM_BINARIES = {
     ("Linux", "x86_64"): "sigrok-cli-linux-x86_64",
     ("Windows", "AMD64"): "sigrok-cli-windows-x86_64.exe",
@@ -55,6 +60,18 @@ def find_sigrok_binary(bin_dir: Path = RESOURCES_DIR / "bin") -> Path | None:
     if os.name == "posix" and not os.access(path, os.X_OK):
         return None
     return path
+
+
+@dataclass(frozen=True)
+class StreamResult:
+    """One soak capture: how it ended, how much data, and the verifier's
+    first problem ("" = none)."""
+    returncode: int | None      # None = killed by the watchdog
+    killed_by: str | None       # None | "timeout" | "cancel"
+    n_bytes: int
+    log: str                    # sigrok-cli's stderr (has the slogic-report line)
+    elapsed_s: float
+    problem: str
 
 
 @dataclass(frozen=True)
@@ -247,6 +264,77 @@ class SigrokCli:
             out_file=out_file, unitsize=unitsize,
             num_channels=channels, samplerate_hz=samplerate_hz,
             n_samples=n_samples, elapsed_s=elapsed)
+
+    def capture_verify(self, *, driver: str, channels: int, samplerate_hz: int,
+                       n_samples: int, pattern: str, timeout_s: float,
+                       cancel: threading.Event | None = None,
+                       verifier=None,
+                       on_progress: Callable[[int], None] | None = None
+                       ) -> StreamResult:
+        """One long continuous capture for the soak test, verified as it
+        streams: (outcome, measured rate figures).  `verifier` gets every
+        chunk of samples (soak.StreamVerifier for Emulation); its problem is
+        returned in StreamResult.problem.
+
+        Everything stays in memory -- a 10-minute 32ch@200M capture is 480 GB,
+        which on disk would cost terabytes of writes.  stdout carries the
+        samples, stderr the log (-l 3 for the core's slogic-report line); each
+        pipe is drained to EOF by its own reader, so neither the capture()
+        progress-indicator trap nor a full stderr pipe can block the child.
+
+        SLogic 2.3.0 or newer (the slogic-report line) is required: the old
+        driver's FRAME-BEGIN/END markers are not stripped here, and a capture
+        from it is rejected by the verdict for having no report."""
+        config = (f"logic_channels={channels}:samplerate={format_rate(samplerate_hz)}"
+                  f":pattern={pattern}")
+        cmd = [str(self.binary), "-d", driver, "-l", "3", "--config", config,
+               "--samples", str(n_samples), "-O", "binary"]
+        chunk = CHUNK_BYTES
+        start = time.time()
+        proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                **{k: v for k, v in _popen_kwargs().items()
+                                   if k not in ("encoding", "errors")})
+        err: list[bytes] = []
+
+        def drain():
+            # only the tail is kept: a driver that logs per transfer for
+            # 30 minutes must not grow memory without bound, and the
+            # slogic-report line is at the very end
+            tail = b""
+            while True:
+                b = proc.stderr.read(1 << 16)
+                if not b:
+                    break
+                tail = (tail + b)[-STDERR_KEEP:]
+            err.append(tail)
+            proc.stderr.close()
+
+        reader = threading.Thread(target=drain, daemon=True)
+        reader.start()
+        total = 0
+        problem = ""
+        with watchdog(proc, timeout_s, cancel) as fate:
+            while True:
+                data = proc.stdout.read(chunk)
+                if not data:
+                    break
+                total += len(data)
+                if verifier is not None and not problem:
+                    problem = verifier.feed(data)
+                if on_progress is not None:
+                    on_progress(total)
+                del data
+            proc.stdout.close()
+            proc.wait()
+        reader.join(timeout=10)
+        log = b"".join(err).decode("utf-8", "replace")
+        if verifier is not None and not problem:
+            problem = verifier.finish()
+        return StreamResult(
+            returncode=None if fate.killed_by else proc.returncode,
+            killed_by=fate.killed_by, n_bytes=total, log=log,
+            elapsed_s=time.time() - start, problem=problem)
 
 
 if __name__ == "__main__":

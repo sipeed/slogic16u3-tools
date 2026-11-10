@@ -3,7 +3,8 @@
 START arms the station: every newly connected board is recognised and run
 automatically; the verdict stays up until the next board arrives.  STOP
 disarms (and cancels a run).  While disarmed, single steps run on the last
-recognised board.
+recognised board.  The soak test is not armed: it runs once on the board
+connected now (run_soak), and STOP ends it.
 
     idle -> wait_insert -> running -> wait_remove -> wait_insert -> ...
 
@@ -362,6 +363,19 @@ class StationController(QObject):
         self._start(pipeline_mod.Pipeline.single_step(
             self.profile, self.sigrok, self._callbacks(), step_id,
             all_profiles=self.profiles))
+
+    def run_soak(self, minutes: int):
+        """Soak test on the board connected now (not armed: one board, run
+        until its time is up or the operator stops it).  The window counts
+        it as a whole-board run but keeps it out of the session tally."""
+        p = self.preview_profile()
+        if p is None or p.soak is None or not self.idle or self.missing():
+            return
+        self.profile = p
+        self.log.emit("===== " + t("Soak test") + " · " + p.display_name + " =====")
+        self._start(pipeline_mod.Pipeline.soak(
+            p, self.sigrok, self._callbacks(), minutes, all_profiles=self.profiles),
+            full=True)
 
     def can_retry(self) -> bool:
         """A failed step may be rerun by hand when nothing is running and the

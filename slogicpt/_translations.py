@@ -447,4 +447,43 @@ ZH: dict[str, str] = {
         '夹具无应答（{e}），重新把位流载入 SRAM',
     'Loading the fixture bitstream into SRAM (first use in this session)':
         '本次启动首次使用夹具，把位流载入 SRAM',
+    # ---- soak test ([soak]) -------------------------------------------------
+    'Production test': '产测',
+    'Soak test': '压力测试',
+    'Start soak': '开始压测',
+    "Production test: armed, every board connected is tested with the fixture.\nSoak test: long continuous captures of the board connected now, at full rate; no fixture needed.":
+        '产测：布防后每块接入的板子用夹具自动测试。\n压力测试：对当前连接的板子满速长时间连续采集并校验；不需要夹具。',
+    'Length of one continuous capture; the soak makes two (Emulation + Normal), so it lasts twice as long. Stop ends it at any time, as a normal end':
+        '单次连续采集的时长；压力测试做两段（Emulation + Normal），总时长是两倍。随时可按「停止」结束（与到时结束一样）',
+    'Connect the board to soak first': '请先连接要压测的板子',
+    '{name} has no soak test ([soak] in its product.toml)': '{name} 没有压力测试（product.toml 中无 [soak]）',
+    'Run the soak test on the connected board': '对当前连接的板子运行压力测试',
+    'continuous captures of {d} each': '两段连续采集，各 {d}',
+    'one continuous capture until stopped': '一段连续采集，直到停止',
+    '== soak {pat}: continuous capture, {d}, at {mode} ==': '== 压测 {pat}：在 {mode} 下连续采集，{d} ==',
+    'Connect one board, choose how long, click Start soak: continuous captures at full rate, Emulation (every sample verified) then Normal, each for the chosen time; no fixture needed':
+        '连接一块板子、选好时长，点「开始压测」：满速连续采集，先 Emulation（逐样本校验）后 Normal，各持续所选时长；不需要夹具',
+    'until stopped': '直到停止',
+    '{n} min': '{n} 分钟',
+    'Soak test · {d} × 2 (Emulation + Normal)': '压力测试 · 连续 {d} × 2（Emulation + Normal）',
+    'Soak test · until stopped': '压力测试 · 直到停止',
+    'no soak config for the {link} link': '[soak] 没有 {link} 链路的配置',
+    'against the emulation rules': '逐样本对照 emulation 规则',
+    "by each channel's period (no emulation rule for {n} ch)": '按逐通道周期（没有 {n} 通道的 emulation 规则）',
+    '{pat} · {done:.1f} / {want:.1f} GB': '{pat} · {done:.1f} / {want:.1f} GB',
+    '{pat} · {done:.1f} GB captured': '{pat} · 已采 {done:.1f} GB',
+    'stopped by the operator': '操作员提前停止',
+    '== soak {mode}: {res} ==': '== 压力测试 {mode}：{res} ==',
+    '[soak] {pat}: FAIL {why}': '[压测] {pat}：失败 {why}',
+    '[soak] {pat}: PASS ({s})': '[压测] {pat}：通过（{s}）',
+    '{pat} {d}: {gb:.1f} GB, {s:,} samples, {mbps:.1f} MB/s': '{pat} {d}：{gb:.1f} GB，{s:,} 个样本，{mbps:.1f} MB/s',
+    '{pat}: {why}': '{pat}：{why}',
+    ' ({m:.1f} min total)': '（共 {m:.1f} 分钟）',
+    '[criteria] soak: {mode} ({link}), {what}; Emulation checked {how}; Normal: exact count, end=ok, rate >= {pct}% ({mbps:g} MB/s)':
+        '[判据] 压力测试：{mode}（{link}），{what}；Emulation {how}；Normal：样本数完整、end=ok、速率 >= {pct}%（{mbps:g} MB/s）',
+    '[soak] no data at all; not starting the next segment':
+        '[压测] 一个字节也没采到，不再开始下一段',
+    'soak.configs[{j}] {ch}ch@{rate} is not a mode this product supports':
+        'soak.configs[{j}] {ch}ch@{rate} 不是本产品支持的模式',
+    '[soak] has no usable configs': '[soak] 没有可用的配置',
 }

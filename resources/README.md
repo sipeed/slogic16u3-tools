@@ -94,6 +94,23 @@ configs = [                # 每轮链路一组配置（5G 下驱动限速：32U
 
 档案自检会检查：每轮链路下每个启用的模式都有对应配置（否则启动即报错，避免某轮悄悄少测）。
 
+可选的 `[soak]` 段启用界面上的「压力测试」模式（不用夹具，见主 README）：
+
+```toml
+[soak]
+min_rate_pct = 90          # 实测速率下限（占 channels × rate / 8 的百分比）；
+                           # 界面「时长」选的是每段连续采集的时长
+configs = [                # 按板子当前链路选一项；写法同 [[plan]] configs
+  { channels = 32, samplerate = "200M", link = "10G" },
+  { channels = 32, samplerate = "100M", link = "5G" },
+]
+emulation_counter_bits  = 16
+emulation_counter_start = 0          # 或 "free"：相位取自第一个样本
+emulation = ["~c0", "~c1", ...]      # 每通道 "cK" / "~cK" / "0" / "1"；与 bench/emulation.json 相同
+```
+
+`emulation` 的通道数与所用配置不符（或不写）时，退化为逐通道周期检查。
+
 ## 保密边界（重要）
 
 本仓库是公开仓库，以下内容**仅限工厂产测工位本地放置，禁止提交入库或以任何形式公开**

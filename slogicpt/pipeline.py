@@ -22,7 +22,7 @@ from . import device_watch
 from .i18n import t
 from .procutil import kill_image
 from .profiles import OUTPUT_DIR, ProductProfile, format_rate
-from .sigrok import CaptureError, SigrokCli
+from .sigrok import CHUNK_BYTES, CaptureError, SigrokCli
 
 
 class StepStatus(Enum):
@@ -177,6 +177,34 @@ def _sequence_spec(profile: ProductProfile
     return spec
 
 
+def soak_duration_text(minutes: int) -> str:
+    """30 -> "30 min", 0 -> "until stopped"."""
+    return t("{n} min").format(n=minutes) if minutes else t("until stopped")
+
+
+def soak_length_text(minutes: int) -> str:
+    """The whole capture plan in words: "continuous captures of 10 min each"
+    (Emulation and Normal, one each) or "one continuous capture until stopped"."""
+    return (t("continuous captures of {d} each").format(d=soak_duration_text(minutes))
+            if minutes else t("one continuous capture until stopped"))
+
+
+def _soak_spec(profile: ProductProfile, minutes: int
+               ) -> list[tuple[str, str, str, tuple, bool]]:
+    """The soak test ([soak]), in _sequence_spec's form: find the board and
+    its link, then loop on it for `minutes` (0 = until stopped).  No fixture."""
+    label = (t("Soak test · {d} × 2 (Emulation + Normal)").format(
+                 d=soak_duration_text(minutes)) if minutes
+             else t("Soak test · until stopped"))
+    return [("link:check", t(STEP_LABELS["link:check"]), "_check_link", (None,), True),
+            ("soak:run", label, "_run_soak", (minutes,), False)]
+
+
+def soak_plan(profile: ProductProfile, minutes: int) -> list[tuple[str, str]]:
+    """(id, label) of the soak test, for the GUI's step list."""
+    return [(sid, label) for sid, label, *_ in _soak_spec(profile, minutes)]
+
+
 def _link_name(link: int | None) -> str:
     return device_watch.link_name(link) if link else "-"
 
@@ -232,6 +260,19 @@ class Pipeline:
         if not matches:
             raise ValueError(t("Unknown step: {step_id}").format(step_id=step_id))
         p.steps = matches
+        return p
+
+    @classmethod
+    def soak(cls, profile: ProductProfile, sigrok: SigrokCli | None,
+             callbacks: PipelineCallbacks, minutes: int, *,
+             all_profiles: list[ProductProfile] | None = None) -> "Pipeline":
+        """The soak test on the connected board ([soak]); 0 minutes = until
+        the operator stops it."""
+        p = cls(profile, sigrok, callbacks, [])
+        p._all_profiles = all_profiles
+        p.steps = [StepDef(sid, label, (lambda m=getattr(p, meth), a=args: m(*a)),
+                           abort_on_fail=abort)
+                   for sid, label, meth, args, abort in _soak_spec(profile, minutes)]
         return p
 
     # ---- lifecycle -------------------------------------------------------
@@ -348,6 +389,7 @@ class Pipeline:
 
     _all_profiles = None        # every product profile (link:check sees all analyzers)
     _link = None                # link of the current test pass (picks the plan configs)
+    _seen_link = None           # link the board was found on by _check_link
 
     # ---- fixture USB presence -------------------------------------------
 
@@ -424,6 +466,7 @@ class Pipeline:
         d = mine[0]
         self.app_serial = d.serial
         speed = d.speed or self._sigrok_link_speed()
+        self._seen_link = speed
         got_txt = device_watch.link_name(speed)
         if need and (speed or 0) < need:
             return fail(t("link too slow: {got}, needs {need} (check the cable and "
@@ -571,6 +614,136 @@ class Pipeline:
                 from .profiles import parse_link
                 return parse_link(m.group(1))
         return None
+
+    # =======================================================================
+    # Soak test ([soak], no fixture)
+    # =======================================================================
+
+    def _run_soak(self, minutes: int) -> bool:
+        """One long continuous capture per pattern at the board's link's soak
+        mode: Emulation first (every sample checked as it streams, plus the
+        rate), then Normal (exact count, end=ok, rate), each lasting
+        `minutes`; 0 = Emulation until the operator stops it.
+
+        A continuous capture is the point: minutes of uninterrupted streaming
+        shake out the faults a series of short captures restarts away --
+        FIFO overflows, a slipping sample stream, thermal/driver slowdowns.
+        Stop is a normal end; only a failed capture is a FAIL."""
+        from . import soak as soak_mod
+        plan = self.profile.soak
+        link = self._seen_link
+        cfg = next((c for c in plan.configs if c.link in (None, link)), None)
+        if cfg is None:
+            why = t("no soak config for the {link} link").format(link=_link_name(link))
+            self._log(why)
+            self.report_lines.append(t("Soak test") + ": FAIL (" + why + ")")
+            return False
+        nch, rate = cfg.channels, cfg.samplerate_hz
+        u = (nch + 7) // 8
+        mode = "%dch@%s" % (nch, format_rate(rate))
+        exp_mbps = rate * nch / 8 / 1e6
+        rules = plan.emulation if len(plan.emulation) == nch else ()
+        checked = (t("against the emulation rules") if rules
+                   else t("by each channel's period (no emulation rule for {n} ch)")
+                   .format(n=nch))
+        self._log(t("[criteria] soak: {mode} ({link}), {what}; "
+                    "Emulation checked {how}; Normal: exact count, end=ok, rate >= "
+                    "{pct}% ({mbps:g} MB/s)").format(
+            mode=mode, link=_link_name(link), what=soak_length_text(minutes),
+            how=checked, pct=plan.min_rate_pct, mbps=exp_mbps))
+        segments = ([(pat, minutes) for pat in soak_mod.PATTERNS] if minutes
+                    else [(soak_mod.PATTERNS[0], 0)])
+        results: list[str] = []          # one report line per segment
+        failures: list[str] = []
+        t_all = time.monotonic()
+        stopped = False
+        for pattern, seg_min in segments:
+            if self.cancel.is_set():
+                stopped = True
+                break
+            # "until stopped" never ends by itself: 8 h at the full rate
+            n = int(rate * (seg_min * 60 if seg_min else 8 * 3600))
+            timeout = (seg_min * 60 if seg_min else 8 * 3600) + 120
+            head = None
+            if pattern == "Emulation":
+                verifier = (soak_mod.StreamVerifier(nch, rules, plan.counter_bits,
+                                                    plan.counter_start, CHUNK_BYTES)
+                            if rules else soak_mod.HeadVerifier(u))
+                head = verifier if not rules else None
+            else:
+                verifier = None
+            self._log(t("== soak {pat}: continuous capture, {d}, at {mode} ==").format(
+                pat=pattern, d=soak_duration_text(seg_min), mode=mode))
+            progress = self._progress_meter(pattern, seg_min, n * u)
+            try:
+                res = self.sigrok.capture_verify(
+                    driver=self.profile.driver, channels=nch, samplerate_hz=rate,
+                    n_samples=n, pattern=pattern, timeout_s=timeout,
+                    cancel=self.cancel, verifier=verifier, on_progress=progress)
+            except OSError as e:
+                res, why = None, str(e)
+            if res is not None:
+                why = res.problem
+                if head is not None and not why:      # no rules: the head's periods
+                    ok, detail = soak_mod.check_periods(head.data, nch, u)
+                    why = "" if ok else detail
+                verdict, mbps = soak_mod.judge_capture(
+                    pattern, rc=res.returncode, killed_by=res.killed_by,
+                    n_bytes=res.n_bytes, elapsed_s=res.elapsed_s, log=res.log,
+                    verify_problem=why, n_expected=n, nch=nch, rate_hz=rate, plan=plan)
+                if res.killed_by == "cancel":
+                    stopped = True
+                line = t("{pat} {d}: {gb:.1f} GB, {s:,} samples, {mbps:.1f} MB/s").format(
+                    pat=pattern, d=soak_duration_text(seg_min), gb=res.n_bytes / 1e9,
+                    s=res.n_bytes // u, mbps=mbps)
+            else:
+                verdict, line = why, None
+            if verdict:
+                failures.append(t("{pat}: {why}").format(pat=pattern, why=verdict))
+                self._log(t("[soak] {pat}: FAIL {why}").format(pat=pattern, why=verdict))
+            else:
+                results.append(line)
+                self._log(t("[soak] {pat}: PASS ({s})").format(pat=pattern, s=line))
+            if stopped:
+                break
+            if res is None or res.n_bytes == 0 or res.returncode not in (0, None):
+                # the device is gone: the next segment cannot run either
+                self._log(t("[soak] no data at all; not starting the next segment"))
+                break
+        if stopped:
+            # stopping is a normal end, not a fault: let the step report its
+            # own verdict instead of the pipeline's "Cancelled"
+            self.cancel.clear()
+        elapsed = time.monotonic() - t_all
+        ok = not failures and bool(results)
+        summary = "; ".join(results) + t(" ({m:.1f} min total)").format(m=elapsed / 60)
+        if stopped:
+            summary += "; " + t("stopped by the operator")
+        self._log(t("== soak {mode}: {res} ==").format(
+            mode=mode, res="PASS" if ok else "FAIL")
+            + "  " + (summary if ok else "; ".join(failures)))
+        self.report_lines.append(
+            "%s %s (%s): " % (t("Soak test"), mode, _link_name(link))
+            + ("PASS" if ok else "FAIL (" + "; ".join(failures) + ")"))
+        self.report_lines.append("  " + summary)
+        return ok
+
+    def _progress_meter(self, pattern: str, seg_min: int, want: int):
+        """At most one progress line a second: 'Emulation · 12.3 / 48.0 GB'."""
+        last = [0.0]
+
+        def report(got: int):
+            now = time.monotonic()
+            if now - last[0] < 1.0:
+                return
+            last[0] = now
+            if seg_min:
+                self.cb.on_progress(t("{pat} · {done:.1f} / {want:.1f} GB").format(
+                    pat=pattern, done=got / 1e9, want=want / 1e9))
+            else:
+                self.cb.on_progress(t("{pat} · {done:.1f} GB captured").format(
+                    pat=pattern, done=got / 1e9))
+        return report
 
     # =======================================================================
     # Fixture signal source (Tang Nano 9K)
@@ -1131,4 +1304,67 @@ if __name__ == "__main__":
         assert ps.sigrok.calls == 1 and not ps.report_lines, ps.sigrok.calls
     finally:
         time.sleep = real_sleep
+
+    print("== 压力测试（假 sigrok：连续采集两段）==")
+    from . import soak as soak_mod
+    from .sigrok import StreamResult
+    report = "slogic-report v1 end=ok samples=1/1 bytes=4 mbps=799.0 xfer=65536x8"
+
+    class SoakSigrok:
+        """Each pattern's capture is canned: 'ok', 'bad' (wrong samples),
+        'slow' (rate), 'stall' (end), 'dead' (device gone), 'cancel'."""
+
+        def __init__(self, script=None):
+            self.script = dict(script or {})
+            self.calls: list[str] = []
+
+        def capture_verify(self, *, pattern, n_samples, cancel, verifier, **_kw):
+            self.calls.append(pattern)
+            how = self.script.pop(pattern, "ok")
+            u = 4
+            if how == "dead":
+                return StreamResult(1, None, 0, "No devices found.", 1.0, "")
+            if how == "cancel":
+                cancel.set()
+                return StreamResult(None, "cancel", 780_000_000, "", 1.0, "")
+            problem = ""
+            if verifier is not None:
+                n = 2_000_000
+                period, base = soak_mod._period(p32.soak.emulation, 16, u)
+                data = (base * (n // period + 1))[:n * u]
+                if how == "bad":
+                    data = data[:40] + bytes([data[40] ^ 1]) + data[41:]
+                for k in range(0, len(data), 1 << 20):
+                    problem = verifier.feed(data[k:k + (1 << 20)])
+                    if problem:
+                        break
+                problem = verifier.finish()
+            log = report.replace("mbps=799.0", "mbps=600.0") if how == "slow" else report
+            log = log.replace("end=ok", "end=error:stall") if how == "stall" else log
+            return StreamResult(0, None, n_samples * u, log, 60.0, problem)
+
+    def soak_case(minutes, script=None):
+        pl = Pipeline(p32, None, cb, [])
+        pl.sigrok = SoakSigrok(script)
+        pl._seen_link = 5
+        return pl._run_soak(minutes), pl
+
+    ok, pl = soak_case(1)                                  # Emulation then Normal
+    assert ok and pl.sigrok.calls == ["Emulation", "Normal"], (ok, pl.sigrok.calls,
+                                                               pl.report_lines)
+    assert any("48.0 GB" in ln for ln in pl.report_lines), pl.report_lines
+    ok, pl = soak_case(1, {"Emulation": "bad"})            # a wrong sample
+    assert not ok and any("sample 10: CH0 wrong" in ln for ln in pl.report_lines), \
+        pl.report_lines
+    ok, pl = soak_case(1, {"Normal": "slow"})              # rate below 90 %
+    assert not ok and any("rate 600.0" in ln for ln in pl.report_lines), pl.report_lines
+    ok, pl = soak_case(1, {"Normal": "stall"})             # driver ended it early
+    assert not ok and any("end=error:stall" in ln for ln in pl.report_lines)
+    ok, pl = soak_case(1, {"Emulation": "dead"})           # no device
+    assert not ok and pl.sigrok.calls == ["Emulation"], pl.sigrok.calls
+    ok, pl = soak_case(0)                                  # until stopped: Emulation only
+    assert ok and pl.sigrok.calls == ["Emulation"], pl.sigrok.calls
+    ok, pl = soak_case(30, {"Normal": "cancel"})           # operator Stop: normal end
+    assert ok and pl.sigrok.calls == ["Emulation", "Normal"], (ok, pl.report_lines)
+    assert any("stopped by the operator" in ln or "提前停止" in ln for ln in pl.report_lines)
     print("pipeline 引擎自测 PASS")

@@ -182,3 +182,32 @@ configs = [
   { channels = 32, samplerate = "200M", window_ms = 40, max_samples = 8000000, link = "10G" },
   { channels = 32, samplerate = "100M", window_ms = 40, max_samples = 8000000, link = "5G" }
 ]
+
+# ===========================================================================
+# 压力测试（工具栏「模式」选「压力测试」）
+# ===========================================================================
+# 移植自 SLogic 仓库 build/bench/slogic_selftest.py --soak，但用的是长时间连续采集
+#（不是它 250 ms 一轮的循环）：每段一次不间断的采集，按板子当前链路选 configs 里的一项
+#（与 [[plan]] 的 link 写法相同），数据边收边校验、只在内存里过、不落盘：
+#   Emulation 段  分析仪板载图案，逐样本对照下面的 emulation 规则（错、少、多都能定位到
+#                 第几个样本），同时要求实测速率 >= min_rate_pct %
+#   Normal 段     输入悬空，只验样本数完整、end=ok、USB 传输队列够深、实测速率
+# 速率取 libsigrok 的 slogic-report。32ch@200M 下每段每秒 800 MB，10 分钟一段 = 480 GB。
+[soak]
+min_rate_pct = 90
+configs = [
+  { channels = 32, samplerate = "200M", link = "10G" },
+  { channels = 32, samplerate = "100M", link = "5G" },
+]
+# Emulation 期望图案（同 bench/emulation.json 的 SLogic32U3 32ch）：每个样本是计数器 c
+# 的函数，c 从 emulation_counter_start 起每样本 +1，宽 emulation_counter_bits 位。
+# 每通道写 "cK"（c 的第 K 位）、"~cK"（取反）、"0" 或 "1"，CH0 在前。通道数与
+# configs 不符或不写时，退化为逐通道周期检查（每个通道都是周期恒定的方波），
+# 只查前 100 万个样本。
+# 实测于 32U3 固件 202610150528 / 202610190735。
+emulation_counter_bits  = 16
+emulation_counter_start = 0
+emulation = ["~c0", "~c1", "~c2", "c3", "c4", "c5", "c6", "c7",
+             "c8", "c9", "c10", "c11", "c12", "c13", "c14", "c15",
+             "c0", "~c0", "c1", "~c1", "c2", "~c2", "~c3", "c3",
+             "~c4", "c4", "~c5", "c5", "~c6", "c6", "~c7", "c7"]

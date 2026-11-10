@@ -156,6 +156,32 @@ class PlanEntry:
 
 
 @dataclass(frozen=True)
+class SoakConfig:
+    """The soak test's channel mode on one link (None -> any link)."""
+
+    channels: int
+    samplerate_hz: int
+    link: int | None = None
+
+
+@dataclass(frozen=True)
+class SoakPlan:
+    """[soak]: capture -> verify -> discard in a loop, alternating the
+    analyzer's on-board Emulation pattern and Normal capture (no fixture).
+
+    emulation[ch] is (counter bit, invert) or (None, constant level): every
+    Emulation sample is a function of a counter that starts at
+    counter_start and adds 1 per sample.  Empty -> the per-channel period
+    check instead."""
+
+    configs: tuple[SoakConfig, ...]
+    min_rate_pct: int = 90
+    emulation: tuple[tuple[int | None, int], ...] = ()
+    counter_bits: int = 16
+    counter_start: int | None = 0
+
+
+@dataclass(frozen=True)
 class Timeouts:
     capture_s: float = 120
     mode_switch_s: float = 30            # each leg of the DFU/APP round trip
@@ -245,6 +271,8 @@ class ProductProfile:
     # M5 is captured once more at this threshold, above logic high, and the
     # inputs must stop seeing the signals ([capture] threshold_check_v); None = off
     threshold_check_v: float | None = None
+    # the soak test ([soak]); None -> the product has none
+    soak: SoakPlan | None = None
 
     @property
     def min_link(self) -> int | None:
@@ -370,6 +398,49 @@ def _parse_plan(doc: dict, num_channels: int, samplerates_hz: list[int],
     return entries
 
 
+def _parse_emulation_rule(expr) -> tuple[int | None, int]:
+    """"c3" -> (3, 0), "~c3" -> (3, 1), "0"/"1" -> (None, level)."""
+    expr = str(expr).strip()
+    if expr in ("0", "1"):
+        return None, int(expr)
+    m = re.fullmatch(r"(~?)c(\d+)", expr)
+    if not m:
+        raise ValueError(f"bad emulation rule {expr!r} (expected cN, ~cN, 0 or 1)")
+    return int(m.group(2)), 1 if m.group(1) else 0
+
+
+def _parse_soak(doc: dict, num_channels: int, samplerates_hz: list[int],
+                max_bw: int, problems: list, pid_for_log: str) -> SoakPlan | None:
+    """Parse [soak] (optional)."""
+    raw = doc.get("soak")
+    if raw is None:
+        return None
+    configs = []
+    for j, c in enumerate(raw.get("configs", [])):
+        ch = int(c["channels"])
+        rate = parse_rate(c["samplerate"])
+        if ch > num_channels or rate not in samplerates_hz \
+                or ch * rate // 8 > max_bw * 1_000_000:
+            problems.append(Problem(
+                "error", pid_for_log,
+                t("soak.configs[{j}] {ch}ch@{rate} is not a mode this product "
+                  "supports").format(j=j, ch=ch, rate=format_rate(rate))))
+            continue
+        configs.append(SoakConfig(ch, rate, parse_link(c["link"]) if c.get("link") else None))
+    if not configs:
+        problems.append(Problem("error", pid_for_log,
+                                t("[soak] has no usable configs")))
+        return None
+    start = raw.get("emulation_counter_start", 0)
+    return SoakPlan(
+        configs=tuple(configs),
+        min_rate_pct=int(raw.get("min_rate_pct", 90)),
+        emulation=tuple(_parse_emulation_rule(x) for x in raw.get("emulation", [])),
+        counter_bits=int(raw.get("emulation_counter_bits", 16)),
+        counter_start=None if start == "free" else int(start),
+    )
+
+
 def _parse_threshold_groups(doc: dict, num_channels: int, default_v: float,
                             problems: list, pid_for_log: str) -> list[ThresholdGroup]:
     """Parse [[capture.threshold_groups]]."""
@@ -437,6 +508,7 @@ def _parse_profile(product_dir: Path,
                            problems, prod_id)
         threshold_groups = _parse_threshold_groups(doc, num_channels, default_vth,
                                                    problems, prod_id)
+        soak = _parse_soak(doc, num_channels, samplerates_hz, max_bw, problems, prod_id)
 
         profile = ProductProfile(
             id=prod_id,
@@ -460,6 +532,7 @@ def _parse_profile(product_dir: Path,
             threshold_groups=threshold_groups,
             product_dir=product_dir,
             timeouts=timeouts,
+            soak=soak,
         )
         if profile.reconfig and profile.dfu_pid is None:
             problems.append(Problem("error", prod_id,
@@ -553,6 +626,11 @@ if __name__ == "__main__":
         print(f"  夹具位流: {p.signal_source.firmware}")
         print(f"  计划: {' '.join(f'M{e.mode}' for e in p.plan)}  链路: "
               f"{', '.join(link_name(k) for k in p.links) or '-'}")
+        if p.soak:
+            print(f"  压力测试: " + ", ".join(
+                f"{c.channels}ch@{format_rate(c.samplerate_hz)}"
+                f"({link_name(c.link) if c.link else '*'})" for c in p.soak.configs)
+                  + f"  Emulation 规则 {len(p.soak.emulation)} 路")
     print(f"\n== {len(problems)} 个问题 ==")
     for prob in problems:
         print(f"  {prob}")
