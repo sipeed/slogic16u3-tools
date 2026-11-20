@@ -179,6 +179,25 @@ class SoakPlan:
     emulation: tuple[tuple[int | None, int], ...] = ()
     counter_bits: int = 16
     counter_start: int | None = 0
+    # chip temperature polling while the test runs (R32_ADC_TEMP)
+    temp_poll_s: float = 10.0
+    temp_warn_c: float = 90.0
+
+
+@dataclass(frozen=True)
+class DdrTest:
+    """The DDR3 test mode ([ddr_test], R32_DDRTST 0x0050).
+
+    Only the usb2_integration firmware carries it (202611120832 and later);
+    the 2.3.x release firmware reads 0 there, and the station refuses with
+    that reason.  It is a bring-up/health facility: while enabled it owns the
+    DDR3MI port, so it never runs together with a capture."""
+
+    min_firmware: str | None = None
+    poll_ms: int = 1000
+    expected_sweeps_per_s: float | None = None   # the doc's reference is ~391
+    temp_poll_s: float = 10.0                    # chip temperature while watching
+    temp_warn_c: float = 90.0
 
 
 @dataclass(frozen=True)
@@ -273,6 +292,8 @@ class ProductProfile:
     threshold_check_v: float | None = None
     # the soak test ([soak]); None -> the product has none
     soak: SoakPlan | None = None
+    # the DDR3 test mode ([ddr_test]); None -> the firmware has none
+    ddr_test: DdrTest | None = None
 
     @property
     def min_link(self) -> int | None:
@@ -409,6 +430,28 @@ def _parse_emulation_rule(expr) -> tuple[int | None, int]:
     return int(m.group(2)), 1 if m.group(1) else 0
 
 
+def _parse_ddr_test(doc: dict, problems: list, pid_for_log: str) -> DdrTest | None:
+    """Parse [ddr_test] (optional)."""
+    raw = doc.get("ddr_test")
+    if raw is None:
+        return None
+    need = raw.get("min_firmware")
+    if need is not None:
+        need = str(need)
+        if not (need.isdigit() and len(need) == 12):
+            problems.append(Problem(
+                "error", pid_for_log,
+                t("[ddr_test] min_firmware must be a 12-digit firmware id "
+                  "(YYYYMMDDhhmm), got {v!r}").format(v=need)))
+            return None
+    rate = raw.get("expected_sweeps_per_s")
+    return DdrTest(min_firmware=need,
+                   poll_ms=int(raw.get("poll_ms", 1000)),
+                   expected_sweeps_per_s=float(rate) if rate is not None else None,
+                   temp_poll_s=float(raw.get("temp_poll_s", 10.0)),
+                   temp_warn_c=float(raw.get("temp_warn_c", 90.0)))
+
+
 def _parse_soak(doc: dict, num_channels: int, samplerates_hz: list[int],
                 max_bw: int, problems: list, pid_for_log: str) -> SoakPlan | None:
     """Parse [soak] (optional)."""
@@ -438,6 +481,8 @@ def _parse_soak(doc: dict, num_channels: int, samplerates_hz: list[int],
         emulation=tuple(_parse_emulation_rule(x) for x in raw.get("emulation", [])),
         counter_bits=int(raw.get("emulation_counter_bits", 16)),
         counter_start=None if start == "free" else int(start),
+        temp_poll_s=float(raw.get("temp_poll_s", 10.0)),
+        temp_warn_c=float(raw.get("temp_warn_c", 90.0)),
     )
 
 
@@ -509,6 +554,7 @@ def _parse_profile(product_dir: Path,
         threshold_groups = _parse_threshold_groups(doc, num_channels, default_vth,
                                                    problems, prod_id)
         soak = _parse_soak(doc, num_channels, samplerates_hz, max_bw, problems, prod_id)
+        ddr_test = _parse_ddr_test(doc, problems, prod_id)
 
         profile = ProductProfile(
             id=prod_id,
@@ -533,6 +579,7 @@ def _parse_profile(product_dir: Path,
             product_dir=product_dir,
             timeouts=timeouts,
             soak=soak,
+            ddr_test=ddr_test,
         )
         if profile.reconfig and profile.dfu_pid is None:
             problems.append(Problem("error", prod_id,
@@ -626,6 +673,8 @@ if __name__ == "__main__":
         print(f"  夹具位流: {p.signal_source.firmware}")
         print(f"  计划: {' '.join(f'M{e.mode}' for e in p.plan)}  链路: "
               f"{', '.join(link_name(k) for k in p.links) or '-'}")
+        if p.ddr_test:
+            print(f"  DDR3 自检: 固件 >= {p.ddr_test.min_firmware or '-'}")
         if p.soak:
             print(f"  压力测试: " + ", ".join(
                 f"{c.channels}ch@{format_rate(c.samplerate_hz)}"

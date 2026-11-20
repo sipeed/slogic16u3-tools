@@ -205,6 +205,27 @@ def soak_plan(profile: ProductProfile, minutes: int) -> list[tuple[str, str]]:
     return [(sid, label) for sid, label, *_ in _soak_spec(profile, minutes)]
 
 
+def ddr_length_text(minutes: int) -> str:
+    """The DDR3 self-test watch length in words."""
+    return (t("{d} of DDR sweeps").format(d=soak_duration_text(minutes)) if minutes
+            else t("until stopped"))
+
+
+def _ddr_spec(profile: ProductProfile, minutes: int
+              ) -> list[tuple[str, str, str, tuple, bool]]:
+    """The DDR3 self-test ([ddr_test]), in _sequence_spec's form: find the
+    board, then watch the DDR3 self-test for `minutes` (0 = until stopped).
+    No fixture, no capture -- the test owns the DDR3 port while it runs."""
+    return [("link:check", t(STEP_LABELS["link:check"]), "_check_link", (None,), True),
+            ("ddr:run", t("DDR3 self-test · {d}").format(
+                d=soak_duration_text(minutes)), "_run_ddr", (minutes,), False)]
+
+
+def ddr_plan(profile: ProductProfile, minutes: int) -> list[tuple[str, str]]:
+    """(id, label) of the DDR3 self-test, for the GUI's step list."""
+    return [(sid, label) for sid, label, *_ in _ddr_spec(profile, minutes)]
+
+
 def _link_name(link: int | None) -> str:
     return device_watch.link_name(link) if link else "-"
 
@@ -260,6 +281,19 @@ class Pipeline:
         if not matches:
             raise ValueError(t("Unknown step: {step_id}").format(step_id=step_id))
         p.steps = matches
+        return p
+
+    @classmethod
+    def ddr(cls, profile: ProductProfile, sigrok: SigrokCli | None,
+            callbacks: PipelineCallbacks, minutes: int, *,
+            all_profiles: list[ProductProfile] | None = None) -> "Pipeline":
+        """The DDR3 self-test on the connected board ([ddr_test]); 0 minutes =
+        until the operator stops it."""
+        p = cls(profile, sigrok, callbacks, [])
+        p._all_profiles = all_profiles
+        p.steps = [StepDef(sid, label, (lambda m=getattr(p, meth), a=args: m(*a)),
+                           abort_on_fail=abort)
+                   for sid, label, meth, args, abort in _ddr_spec(profile, minutes)]
         return p
 
     @classmethod
@@ -320,6 +354,7 @@ class Pipeline:
             #   PermissionError(13, 'Access is denied') on COM30
             # which the operator sees as "no signal generator" from then on.
             self._signal_close()
+            self._thermal_stop()
             self.cb.on_user_prompt_clear()
 
             # End with "which wire, in which mode" rather than leaving the operator
@@ -390,6 +425,7 @@ class Pipeline:
     _all_profiles = None        # every product profile (link:check sees all analyzers)
     _link = None                # link of the current test pass (picks the plan configs)
     _seen_link = None           # link the board was found on by _check_link
+    _thermal_mon = None         # ThermalMonitor running for this unit (if any)
 
     # ---- fixture USB presence -------------------------------------------
 
@@ -655,6 +691,7 @@ class Pipeline:
                     else [(soak_mod.PATTERNS[0], 0)])
         results: list[str] = []          # one report line per segment
         failures: list[str] = []
+        thermal = self._thermal(plan)    # chip temperature, logged + in the report
         t_all = time.monotonic()
         stopped = False
         for pattern, seg_min in segments:
@@ -674,7 +711,7 @@ class Pipeline:
                 verifier = None
             self._log(t("== soak {pat}: continuous capture, {d}, at {mode} ==").format(
                 pat=pattern, d=soak_duration_text(seg_min), mode=mode))
-            progress = self._progress_meter(pattern, seg_min, n * u)
+            progress = self._progress_meter(pattern, seg_min, n * u, thermal)
             try:
                 res = self.sigrok.capture_verify(
                     driver=self.profile.driver, channels=nch, samplerate_hz=rate,
@@ -714,9 +751,23 @@ class Pipeline:
             # stopping is a normal end, not a fault: let the step report its
             # own verdict instead of the pipeline's "Cancelled"
             self.cancel.clear()
+        tstat = self._thermal_stop()
+        if tstat is not None and tstat.valid:
+            self.report_lines.append(
+                "  " + t("temperature {a:.1f}→{b:.1f} ℃ (peak {p:.1f})").format(
+                    a=tstat.start_c, b=tstat.last_c, p=tstat.peak_c))
+            if tstat.peak_c >= plan.temp_warn_c:
+                self._log(t("[thermal] peak {p:.1f} ℃ reached the warning level "
+                            "({w:.0f} ℃); the board may reset when it gets hot")
+                          .format(p=tstat.peak_c, w=plan.temp_warn_c))
         elapsed = time.monotonic() - t_all
         ok = not failures and bool(results)
         summary = "; ".join(results) + t(" ({m:.1f} min total)").format(m=elapsed / 60)
+        if tstat is not None and tstat.valid:
+            summary += t("; temperature {a:.1f}→{b:.1f} ℃ (peak {p:.1f})").format(
+                a=tstat.start_c, b=tstat.last_c, p=tstat.peak_c)
+            if tstat.peak_c >= plan.temp_warn_c:
+                summary += t("; above {w:.0f} ℃").format(w=plan.temp_warn_c)
         if stopped:
             summary += "; " + t("stopped by the operator")
         self._log(t("== soak {mode}: {res} ==").format(
@@ -728,8 +779,8 @@ class Pipeline:
         self.report_lines.append("  " + summary)
         return ok
 
-    def _progress_meter(self, pattern: str, seg_min: int, want: int):
-        """At most one progress line a second: 'Emulation · 12.3 / 48.0 GB'."""
+    def _progress_meter(self, pattern: str, seg_min: int, want: int, thermal=None):
+        """At most one progress line a second: 'Emulation · 12.3 / 48.0 GB · 91.5 ℃'."""
         last = [0.0]
 
         def report(got: int):
@@ -738,12 +789,160 @@ class Pipeline:
                 return
             last[0] = now
             if seg_min:
-                self.cb.on_progress(t("{pat} · {done:.1f} / {want:.1f} GB").format(
-                    pat=pattern, done=got / 1e9, want=want / 1e9))
+                text = t("{pat} · {done:.1f} / {want:.1f} GB").format(
+                    pat=pattern, done=got / 1e9, want=want / 1e9)
             else:
-                self.cb.on_progress(t("{pat} · {done:.1f} GB captured").format(
-                    pat=pattern, done=got / 1e9))
+                text = t("{pat} · {done:.1f} GB captured").format(
+                    pat=pattern, done=got / 1e9)
+            c = thermal.stats.last_c if thermal is not None else None
+            if c is not None:
+                text += t(" · {c:.1f} ℃").format(c=c)
+            self.cb.on_progress(text)
         return report
+
+    def _thermal(self, plan):
+        """Chip-temperature monitor for the board connected now, or None
+        (not found, or a firmware without R32_ADC_TEMP).  The monitor logs a
+        line a minute; the soak's summary carries start/peak/end."""
+        from . import device_watch
+        from .thermal import ThermalMonitor
+        p = self.profile
+        try:
+            devs = device_watch.scan_devices(self._all_profiles or [p])
+        except Exception:                                       # noqa: BLE001
+            return None
+        mine = [d for d in devs if d.profile.id == p.id
+                and d.mode is device_watch.Mode.APP]
+        if not mine:
+            return None
+        last = [0.0]
+
+        def sample(c):
+            now = time.monotonic()
+            if now - last[0] < 60.0:
+                return
+            last[0] = now
+            self._log(t("[thermal] die {c}").format(
+                c=t("not reported") if c is None else "%.1f ℃" % c))
+
+        mon = ThermalMonitor(mine[0], plan.temp_poll_s, cancel=self.cancel,
+                             on_sample=sample)
+        mon.start()
+        self._thermal_mon = mon
+        return mon
+
+    def _thermal_stop(self):
+        """Stop the temperature monitor if one is running; returns its
+        stats (or None).  Called by each bench step, and again by the
+        pipeline's finally so no path leaves the thread polling."""
+        mon, self._thermal_mon = self._thermal_mon, None
+        return mon.stop() if mon is not None else None
+
+    # =======================================================================
+    # DDR3 self-test ([ddr_test], R32_DDRTST; no fixture, no capture)
+    # =======================================================================
+
+    def _run_ddr(self, minutes: int) -> bool:
+        """Enable the DDR3 self-test, watch it for `minutes` (0 = until
+        stopped), then stop + clear.  PASS = calibrated, the sweep counter ran
+        at a sane rate and no sticky error appeared; Stop is a normal end.
+
+        The firmware must carry the test (usb2_integration 202611120832+); the
+        USB serial is its firmware id, so an older board is refused before the
+        register is touched, and a 2.3.x board is refused by the register
+        reading 0."""
+        from . import ddr as ddr_mod
+        from . import device_watch
+        p = self.profile
+        plan = p.ddr_test
+        serial = self.app_serial
+        need = plan.min_firmware
+        self._log(t("[criteria] DDR3 self-test: {name} app firmware >= {fw}, USB link "
+                    "any, watch {d}; no capture may run (the test owns the DDR3 "
+                    "port)").format(name=p.display_name, fw=need or "-",
+                                    d=soak_duration_text(minutes)))
+        if need:
+            if not (serial and serial.isdigit() and len(serial) == len(need)):
+                why = t("cannot read the app firmware id (USB serial {sn!r})").format(
+                    sn=serial)
+                return self._ddr_fail(why)
+            if serial < need:
+                why = t("app firmware {sn} is older than {need}, the first with the "
+                        "DDR3 test mode: use the usb2_integration image").format(
+                    sn=serial, need=need)
+                return self._ddr_fail(why)
+        devs = device_watch.scan_devices(self._all_profiles or [p])
+        mine = [d for d in devs if d.profile.id == p.id
+                and d.mode is device_watch.Mode.APP]
+        if len(mine) != 1:
+            return self._ddr_fail(t("no single {name} in APP mode").format(
+                name=p.display_name))
+        try:
+            ddr = ddr_mod.DdrDevice.open(mine[0])
+        except ddr_mod.DdrError as e:
+            return self._ddr_fail(str(e))
+        last = [0.0]
+
+        def tick(watch_s: float, st) -> None:
+            now = time.monotonic()
+            if now - last[0] < 1.0:
+                return
+            last[0] = now
+            self.cb.on_progress(t("DDR · {s:.0f} s · loop {n} · lanes {lanes}").format(
+                s=watch_s, n=st.loop,
+                lanes=",".join(str(i) for i in st.lanes) or "-"))
+
+        self._thermal(plan)              # chip temperature, logged + in the report
+        try:
+            res = ddr_mod.run(
+                ddr, minutes * 60 if minutes else 0,
+                poll_s=plan.poll_ms / 1000.0,
+                expected_rate=plan.expected_sweeps_per_s or ddr_mod.EXPECTED_SWEEPS_PER_S,
+                cancel=self.cancel, on_tick=tick, log=self._log)
+        except ddr_mod.DdrRefused as e:
+            ddr.close()
+            return self._ddr_fail(str(e))
+        except ddr_mod.DdrError as e:
+            ddr.close()
+            self._thermal_stop()
+            return self._ddr_fail(str(e))
+        ddr.close()
+        tstat = self._thermal_stop()
+        if res.stopped_early:
+            # like the soak: stopping is how a run ends, not a fault
+            self.cancel.clear()
+        why = ddr_mod.verdict_text(res)
+        final = res.final
+        summary = t("calibrated in {c:.3f} s; {s:,} sweeps in {m:.1f} min "
+                    "({r:.0f}/s); sticky={st}; lanes={lanes}").format(
+            c=res.calib_s, s=res.sweeps, m=res.watch_s / 60, r=res.rate,
+            st=int(res.sticky), lanes=",".join(str(i) for i in res.lanes) or "none")
+        if tstat is not None and tstat.valid:
+            summary += t("; temperature {a:.1f}→{b:.1f} ℃ (peak {p:.1f})").format(
+                a=tstat.start_c, b=tstat.last_c, p=tstat.peak_c)
+            if tstat.peak_c >= plan.temp_warn_c:
+                self._log(t("[thermal] peak {p:.1f} ℃ reached the warning level "
+                            "({w:.0f} ℃); the board may reset when it gets hot")
+                          .format(p=tstat.peak_c, w=plan.temp_warn_c))
+        if res.stopped_early:
+            summary += "; " + t("stopped by the operator")
+        ok = not why
+        self._log(t("== DDR3 self-test: {res} ==").format(
+            res="PASS" if ok else "FAIL") + "  " + (summary if ok else why))
+        for ev_t, ev in res.events[:20]:
+            self._log("  [ddr] %6.1fs %s" % (ev_t, ev))
+        self.report_lines.append(
+            "%s (%s): " % (t("DDR3 self-test"), p.display_name)
+            + ("PASS (" + summary + ")" if ok else "FAIL (" + why + ")"))
+        self.report_lines.append("  " + summary)
+        if final is not None:
+            self.report_lines.append("  " + str(final))
+        return ok
+
+    def _ddr_fail(self, why: str) -> bool:
+        self._log("DDR3: " + why)
+        self.report_lines.append(t("DDR3 self-test") + ": FAIL (" + why + ")")
+        return False
 
     # =======================================================================
     # Fixture signal source (Tang Nano 9K)
@@ -1347,6 +1546,7 @@ if __name__ == "__main__":
         pl = Pipeline(p32, None, cb, [])
         pl.sigrok = SoakSigrok(script)
         pl._seen_link = 5
+        pl._thermal = lambda _plan: None          # no hardware in the self-test
         return pl._run_soak(minutes), pl
 
     ok, pl = soak_case(1)                                  # Emulation then Normal
@@ -1367,4 +1567,78 @@ if __name__ == "__main__":
     ok, pl = soak_case(30, {"Normal": "cancel"})           # operator Stop: normal end
     assert ok and pl.sigrok.calls == ["Emulation", "Normal"], (ok, pl.report_lines)
     assert any("stopped by the operator" in ln or "提前停止" in ln for ln in pl.report_lines)
+    print("== 温度监控随步骤收尾 ==")
+    from .thermal import ThermalStats
+
+    class FakeMon:
+        def __init__(self):
+            self.stopped = 0
+            self.stats = ThermalStats(start_c=40.0, last_c=50.0, peak_c=95.0,
+                                      samples=3)
+
+        def stop(self):
+            self.stopped += 1
+            return self.stats
+
+    def fake_thermal(pl, mon):
+        def make(_plan):
+            pl._thermal_mon = mon
+            return mon
+        return make
+
+    mon = FakeMon()
+    pl = Pipeline(p32, None, cb, [])
+    pl.sigrok = SoakSigrok()
+    pl._seen_link = 5
+    pl._thermal = fake_thermal(pl, mon)
+    assert pl._run_soak(0) and mon.stopped == 1, mon.stopped
+    assert any("95.0" in ln for ln in pl.report_lines), pl.report_lines
+
+    mon = FakeMon()
+    pl = Pipeline(p32, None, cb, [StepDef("boom", "boom", lambda: 1 / 0)])
+    pl._thermal_mon = mon           # as _thermal() would have registered it
+    pl._run()                       # the step raises; the finally stops the monitor
+    assert mon.stopped == 1, mon.stopped
+
+    print("== DDR3 自检（假设备）==")
+    from . import ddr as ddr_mod
+
+    dev32 = DeviceStatus(p32, Mode.APP, p32.app_pid, "202611120832",
+                         bus=2, port_numbers=(3,), speed=5)
+    real_scan_ddr = device_watch.scan_devices
+    real_open = ddr_mod.DdrDevice.open
+    fake = {"dev": ddr_mod.FakeRegs()}
+
+    def ddr_case(serial, devices=None, regs=None, minutes=0, stop_after=0.2):
+        pl = Pipeline.ddr(p32, None, cb, minutes)
+        pl._all_profiles = all_profiles
+        pl.app_serial = serial
+        pl._thermal = lambda _plan: None          # no hardware in the self-test
+        fake["dev"] = regs if regs is not None else ddr_mod.FakeRegs()
+        device_watch.scan_devices = lambda _p: [dev32] if devices is None else devices
+        ddr_mod.DdrDevice.open = classmethod(lambda cls, d: ddr_mod.DdrDevice(fake["dev"]))
+        if stop_after:
+            threading.Timer(stop_after, pl.request_cancel).start()
+        try:
+            return pl._run_ddr(minutes), pl
+        finally:
+            device_watch.scan_devices = real_scan_ddr
+            ddr_mod.DdrDevice.open = real_open
+
+    ok, pl = ddr_case("202611120832")                  # watch cut short by Stop
+    assert ok and not pl.cancel.is_set(), pl.report_lines
+    assert any("DDR3" in ln and "PASS" in ln for ln in pl.report_lines), pl.report_lines
+    assert fake["dev"].regs[0x14] & 0x2 == 0, "the test must be disabled afterwards"
+    ok, pl = ddr_case("202610300412")                  # older firmware: refused early
+    assert not ok and any("202611120832" in ln for ln in pl.report_lines), pl.report_lines
+    ok, pl = ddr_case("202611120832", devices=[])      # nobody plugged in
+    assert not ok and any("APP" in ln for ln in pl.report_lines), pl.report_lines
+    ok, pl = ddr_case("202611120832", regs=ddr_mod.FakeRegs(ctrl=1))   # a capture runs
+    assert not ok and any("R32_CTRL" in ln for ln in pl.report_lines), pl.report_lines
+    ok, pl = ddr_case("202611120832", regs=ddr_mod.FakeRegs(zero=True))
+    assert not ok and any("R32_DDRTST" in ln for ln in pl.report_lines), pl.report_lines
+    ok, pl = ddr_case("202611120832", regs=ddr_mod.FakeRegs(sticky_at=6),
+                      minutes=1, stop_after=0.3)
+    assert not ok and any("sticky" in ln for ln in pl.report_lines), pl.report_lines
+
     print("pipeline 引擎自测 PASS")

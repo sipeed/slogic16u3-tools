@@ -486,4 +486,62 @@ ZH: dict[str, str] = {
     'soak.configs[{j}] {ch}ch@{rate} is not a mode this product supports':
         'soak.configs[{j}] {ch}ch@{rate} 不是本产品支持的模式',
     '[soak] has no usable configs': '[soak] 没有可用的配置',
+    # ---- DDR3 self-test ([ddr_test]) --------------------------------------
+    'DDR3 self-test': 'DDR3 自检',
+    'Start DDR test': '开始自检',
+    'Run the DDR3 self-test on the connected board': '对当前连接的板子运行 DDR3 自检',
+    'Connect the board to test first': '请先连接要测试的板子',
+    '{name} has no DDR3 self-test ([ddr_test] in its product.toml)':
+        '{name} 没有 DDR3 自检（product.toml 中无 [ddr_test]）',
+    'DDR3 self-test · {d}': 'DDR3 自检 · {d}',
+    '{d} of DDR sweeps': '{d} DDR 扫描',
+    'firmware >= {fw}': '固件 >= {fw}',
+    'DDR3 self-test: the firmware\'s own DDR3 sweep test (usb2_integration image).':
+        'DDR3 自检：固件自带的 DDR3 扫描自测（usb2_integration 映像）。',
+    "Production test: armed, every board connected is tested with the fixture.\nSoak test: long continuous captures of the board connected now, at full rate; no fixture needed.\nDDR3 self-test: the firmware's own DDR3 sweep test (usb2_integration image).":
+        '产测：布防后每块接入的板子用夹具自动测试。\n压力测试：对当前连接的板子满速长时间连续采集并校验；不需要夹具。\nDDR3 自检：固件自带的 DDR3 扫描自测（usb2_integration 映像）。',
+    'Connect one board running the usb2_integration firmware, choose how long, click Start DDR test: the firmware sweeps the whole DDR3 and compares every beat while the station watches the sweep counter and sticky errors; no fixture needed, and no capture may run meanwhile':
+        '连接一块跑 usb2_integration 固件的板子，选好时长，点「开始自检」：固件扫描整片 DDR3 并逐 beat 比对，工具监视扫描计数和 sticky 错误；不需要夹具，期间不能采集',
+    'How long the DDR3 self-test watches; Stop ends it at any time, as a normal end':
+        'DDR3 自检的观察时长；随时可按「停止」结束（与到时结束一样）',
+    'DDR · {s:.0f} s · loop {n} · lanes {lanes}': 'DDR · {s:.0f} 秒 · 扫描计数 {n} · lanes {lanes}',
+    'calibrated in {c:.3f} s; {s:,} sweeps in {m:.1f} min ({r:.0f}/s); sticky={st}; lanes={lanes}':
+        '校准 {c:.3f} 秒；{m:.1f} 分钟内 {s:,} 次扫描（{r:.0f} 次/秒）；sticky={st}；lanes={lanes}',
+    '== DDR3 self-test: {res} ==': '== DDR3 自检：{res} ==',
+    'DDR3: {why}': 'DDR3：{why}',
+    'a capture is running (R32_CTRL bit0=1): stop it before enabling the DDR test':
+        '正在采集（R32_CTRL bit0=1）：先停止采集再启用 DDR3 自测',
+    'R32_DDRTST reads 0: this firmware has no DDR3 test mode (needs the usb2_integration image, 202611120832 or later)':
+        'R32_DDRTST 读回 0：该固件没有 DDR3 自测模式（需要 usb2_integration 映像 202611120832 及以上）',
+    'device not found': '找不到设备',
+    'short register read ({n} bytes)': '寄存器读回太短（{n} 字节）',
+    'calibration did not complete within {s:g} s ({st})': '{s:g} 秒内校准未完成（{st}）',
+    'no calibration/liveness (the test never started)': '没有校准/活性（自测没跑起来）',
+    'sticky error, lanes {lanes} (DDR data/timing)': 'sticky 错误，lane {lanes}（DDR 数据/时序）',
+    'sticky error without a lane (stall watchdog or calibration timeout)':
+        'sticky 错误但没有 lane（stall watchdog 或校准超时）',
+    'the sweep counter stopped': '扫描计数停住了',
+    'no sweep completed': '一次扫描也没完成',
+    'app firmware {sn} is older than {need}, the first with the DDR3 test mode: use the usb2_integration image':
+        'app 固件 {sn} 早于 {need}（首个带 DDR3 自测的固件）：请用 usb2_integration 映像',
+    'cannot read the app firmware id (USB serial {sn!r})': '读不到 app 固件标识（USB 序列号 {sn!r}）',
+    'no single {name} in APP mode': '没有唯一的 {name} 处于 APP 模式',
+    '[criteria] DDR3 self-test: {name} app firmware >= {fw}, USB link any, watch {d}; no capture may run (the test owns the DDR3 port)':
+        '[判据] DDR3 自检：{name} app 固件 >= {fw}，USB 链路不限，观察 {d}；期间不能采集（自测独占 DDR3 口）',
+    '[ddr_test] min_firmware must be a 12-digit firmware id (YYYYMMDDhhmm), got {v!r}':
+        '[ddr_test] min_firmware 必须是 12 位固件标识（YYYYMMDDhhmm），收到 {v!r}',
+    # ---- chip temperature (R32_ADC_TEMP) ----------------------------------
+    ' · {c:.1f} ℃': ' · {c:.1f} ℃',
+    'temperature {a:.1f}→{b:.1f} ℃ (peak {p:.1f})':
+        '温度 {a:.1f}→{b:.1f} ℃（峰值 {p:.1f}）',
+    '; temperature {a:.1f}→{b:.1f} ℃ (peak {p:.1f})':
+        '；温度 {a:.1f}→{b:.1f} ℃（峰值 {p:.1f}）',
+    '; above {w:.0f} ℃': '；超过 {w:.0f} ℃',
+    '[thermal] die {c}': '[温度] 芯片 {c}',
+    'not reported': '未上报',
+    '[thermal] peak {p:.1f} ℃ reached the warning level ({w:.0f} ℃); the board may reset when it gets hot':
+        '[温度] 峰值 {p:.1f} ℃ 达到警戒值（{w:.0f} ℃）：板子过热时可能复位',
+    'USB link dropped; waiting for the board to come back':
+        'USB 链路断开，正在等待板子重新出现',
+    'board is back; the test kept running': '板子已重新连上，测试继续',
 }

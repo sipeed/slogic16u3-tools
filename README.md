@@ -66,8 +66,11 @@ Sipeed SLogic 系列逻辑分析仪产线产测工具，**数据驱动多产品*
    - **Normal 段**（输入悬空）：样本数完整、`end=ok`、USB 传输队列够深、实测速率 ≥ 90 %
      （速率取 libsigrok 的 `slogic-report`）。
    所以选 10 分钟 = Emulation 连续 10 分钟 + Normal 连续 10 分钟，共约 20 分钟。
-3. 进行中卡片显示「Emulation · 12.3 / 48.0 GB」这样的进度；运行日志记录每段的开始与结果；
-4. 结论：**只要没出现失败的段就 PASS**——跑满时长、或中途按「停止」，都是正常结束；
+3. 进行中卡片显示「Emulation · 12.3 / 48.0 GB · 88.5 ℃」这样的进度；运行日志记录每段的开始与结果；
+4. **芯片温度**：全程每 `temp_poll_s`（默认 10 s）读一次 `R32_ADC_TEMP`，进度行带当前温度，
+   运行日志每分钟一行，报告给「起始→结束（峰值）」；峰值达到 `temp_warn_c`（默认 90 ℃）时
+   日志与报告标注高温，但**不影响 PASS/FAIL**。固件不上报温度时显示「未上报」，其余照常；
+5. 结论：**只要没出现失败的段就 PASS**——跑满时长、或中途按「停止」，都是正常结束；
    只有采集失败（样本错位、丢数据、速率不够、`end` 不是 ok）才是 FAIL。
 
 32ch@200M 下每秒 800 MB、1 分钟 48 GB，所以数据**只经管道在内存里边收边校验**，不落盘
@@ -75,6 +78,38 @@ Sipeed SLogic 系列逻辑分析仪产线产测工具，**数据驱动多产品*
 压力测试不计入「本次启动」的产测通过/失败计数；切回「产测」即恢复布防流程；
 程序每次启动都在「产测」模式。判定逻辑移植自 SLogic 仓库
 `build/bench/slogic_selftest.py --soak`，需要 SLogic 2.3.0 及以上的 sigrok-cli。
+
+### DDR3 自检（32U3，usb2_integration 固件）
+
+模式下拉框的第三项「DDR3 自检」用于 32U3 的 usb2_integration 固件（串号 **202611120832 及以后**，
+即带 DDR3 测试引擎的版本；2.3.x 发布固件没有这个模式，判 0 后直接报「固件不支持」）：
+
+1. 只连一块被测板（APP 模式），**不需要夹具**；期间的观察时长沿用旁边的时长下拉框
+   （1…30 分钟 / 直到停止）；
+2. 点「开始自检」：先查固件标识（USB 序列号）是否不低于 `[ddr_test] min_firmware`，
+   再确认**没有正在进行的采集**（DDR 自测与采集互斥，RTL 没有互锁，采集中启用会毁掉在途数据），
+   然后写 `R32_DDRTST=1` 启用，等 calib_ok 与计数前进；
+3. 观察期间每秒读 `R32_DDRTST`：循环计数应按约 391 次/秒前进，lane 掩码/sticky 必须为空；
+4. 结束（到时或按「停止」，都算正常结束）后停用 + 清除 sticky，报告里给出校准耗时、
+   扫描次数、扫描速率、最终 lane 与冻结计数。只有校准失败、计数停滞或 sticky 置位才 FAIL。
+   与压测一样，期间每 10 秒读一次芯片温度，报告里给起始→结束（峰值）。
+
+命令行等价物（选项与固件组的 `ddr_test.py` 一致，可互换使用）：
+
+```bash
+python -m slogicpt.ddr --status                 # 读并解码 R32_DDRTST
+python -m slogicpt.ddr --start --watch 60 --stop --json report.json
+python -m slogicpt.ddr --clear                  # 清 sticky（保持启用电平）
+python -m slogicpt.ddr --self-test              # 离线自测（假寄存器设备）
+```
+
+exit code：0 成功、2 观察到 sticky/停滞、3 USB/设备错误、4 采集进行中被拒。
+
+⚠️ 实测记录：这块板曾出现过全 lane 比对错、`--clear` 后重新启用仍复现，做一次
+APP→DFU→APP 重配置后恢复（计数归零）。自测期间设备若重新枚举（拔插、主机侧重连），
+正在跑的测试在 FPGA 里不受影响：工具会按端口路径自动找回设备继续观察，报告里注明重连次数。
+现场若连续报 lane 错，先重配置或断电再复测，并记录 lane 掩码与芯片温度。
+协议细节见 `docs/protocol-digest.md`。
 
 ## 目录结构
 
@@ -97,12 +132,14 @@ Sipeed SLogic 系列逻辑分析仪产线产测工具，**数据驱动多产品*
 │   ├── device_watch.py  #   USB 设备检测（产品 + APP/DFU 模式 + 链路速率）
 │   ├── patterns.py      #   夹具图案的期望值（唯一权威，由 RTL 推导）
 │   ├── soak.py          #   压力测试判定：连续采集边收边逐样本校验、Normal 速率/完整性（移植自 slogic_selftest --soak）
+│   ├── ddr.py           #   DDR3 自检：R32_DDRTST 寄存器、启用/监视/清除与 CLI（含离线自测）
 │   ├── checks.py        #   判定层：逐通道 + 结构化判定（不滤波；判不了即 FAIL）
 │   ├── deep_checks.py   #   内容级检查：SPI/I2C/UART 解码、突发包络
 │   ├── fixture.py       #   夹具（Tang Nano 9K）位流载入 SRAM（本次启动首次用到时 / 不应答时）
 │   ├── fpga.py          #   夹具串口：切模式、存活检查
 │   ├── sigrok.py        #   sigrok-cli 采样封装（logic_channels 分组、回卷检测）
 │   └── waveform.py      #   波形拆包（任意通道数）与接线置换
+├── docs/                # 协议摘录（docs/protocol-digest.md）
 ├── resources/           # 管理员资源：产品档案 / 夹具位流 / 外部工具清单 tools.toml（见其 README）
 ├── out/                 # 运行时采样输出（自动创建，不入库）
 ├── build.py             # PyInstaller 单二进制打包
@@ -136,6 +173,8 @@ python -m slogicpt.profiles      # 档案加载与资源自检
 python -m slogicpt.device_watch  # 设备插拔监视（含链路速率）
 python -m slogicpt.pipeline      # 流程引擎自测（步骤表、链路判据、压力测试两段采集）
 python -m slogicpt.soak          # 压力测试判定自测（流式逐样本、错位/丢失、速率、slogic-report）
+python -m slogicpt.ddr --self-test  # DDR3 自检自测（假寄存器设备）
+python -m slogicpt.ddr --status     # 读 32U3 的 R32_DDRTST（需 usb2_integration 固件）
 python -m slogicpt.patterns      # 夹具图案期望值自测
 python -m slogicpt.checks        # 判定层自测
 python -m slogicpt.deep_checks   # SPI/I2C/UART 解码、突发包络自测

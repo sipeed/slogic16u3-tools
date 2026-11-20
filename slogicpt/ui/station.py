@@ -377,6 +377,18 @@ class StationController(QObject):
             p, self.sigrok, self._callbacks(), minutes, all_profiles=self.profiles),
             full=True)
 
+    def run_ddr(self, minutes: int):
+        """DDR3 self-test on the board connected now (needs the
+        usb2_integration firmware); not armed, not counted as a board test."""
+        p = self.preview_profile()
+        if p is None or p.ddr_test is None or not self.idle or self.missing():
+            return
+        self.profile = p
+        self.log.emit("===== " + t("DDR3 self-test") + " · " + p.display_name + " =====")
+        self._start(pipeline_mod.Pipeline.ddr(
+            p, self.sigrok, self._callbacks(), minutes, all_profiles=self.profiles),
+            full=True)
+
     def can_retry(self) -> bool:
         """A failed step may be rerun by hand when nothing is running and the
         board it failed on is still the one in front of us (disarmed, or

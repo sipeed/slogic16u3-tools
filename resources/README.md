@@ -100,6 +100,8 @@ configs = [                # 每轮链路一组配置（5G 下驱动限速：32U
 [soak]
 min_rate_pct = 90          # 实测速率下限（占 channels × rate / 8 的百分比）；
                            # 界面「时长」选的是每段连续采集的时长
+temp_poll_s  = 10          # 压测期间读芯片温度（R32_ADC_TEMP）的间隔
+temp_warn_c  = 90          # 峰值温度警戒值（只提示，不影响 PASS/FAIL）
 configs = [                # 按板子当前链路选一项；写法同 [[plan]] configs
   { channels = 32, samplerate = "200M", link = "10G" },
   { channels = 32, samplerate = "100M", link = "5G" },
@@ -110,6 +112,15 @@ emulation = ["~c0", "~c1", ...]      # 每通道 "cK" / "~cK" / "0" / "1"；与 
 ```
 
 `emulation` 的通道数与所用配置不符（或不写）时，退化为逐通道周期检查。
+
+可选的 `[ddr_test]` 段启用「DDR3 自检」（usb2_integration 固件，见主 README）：
+
+```toml
+[ddr_test]
+min_firmware          = "202611120832"   # 固件标识（USB 序列号）下限，更旧的板子直接拒绝
+poll_ms               = 1000             # 监视时轮询 R32_DDRTST 的间隔
+expected_sweeps_per_s = 391              # 参考量，仅用于报告
+```
 
 ## 保密边界（重要）
 

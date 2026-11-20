@@ -22,8 +22,8 @@ from PyQt5.QtWidgets import (
 
 from .. import env_setup, version
 from ..i18n import LANGS, get_language, set_language, t
-from ..pipeline import (StepStatus, sequence_plan, soak_duration_text,
-                        soak_length_text, soak_plan)
+from ..pipeline import (StepStatus, ddr_length_text, ddr_plan, sequence_plan,
+                        soak_duration_text, soak_length_text, soak_plan)
 from ..profiles import OUTPUT_DIR, check_resources, load_profiles
 from ..sigrok import SigrokCli, find_sigrok_binary
 from . import icons, report, theme
@@ -93,9 +93,9 @@ class MainWindow(QMainWindow):
         self._progress = ""                 # latest "what is happening" line
         self._modes: dict[tuple[str, str], tuple[str, str]] = {}  # cell -> (state, why)
         self._session: list[bool] = []      # verdict per board this session (memory only)
-        # "test" = production test (armed, per board); "soak" = soak test on
-        # the board connected now.  Not remembered: the station always starts
-        # in production test
+        # "test" = production test (armed, per board); "soak" / "ddr" = bench
+        # tests on the board connected now.  Not remembered: the station
+        # always starts in production test
         self._mode = "test"
         try:
             self._soak_minutes = int(QSettings().value("soak_minutes", 10))
@@ -259,13 +259,15 @@ class MainWindow(QMainWindow):
         self.mode_box = QComboBox()
         self.mode_box.addItem(t("Production test"), "test")
         self.mode_box.addItem(t("Soak test"), "soak")
+        self.mode_box.addItem(t("DDR3 self-test"), "ddr")
         self.mode_box.setCurrentIndex(self.mode_box.findData(self._mode))
         self.mode_box.setToolTip(t("Production test: armed, every board connected is "
                                    "tested with the fixture.\nSoak test: long continuous "
                                    "captures of the board connected now, at full rate; "
-                                   "no fixture needed."))
+                                   "no fixture needed.\nDDR3 self-test: the firmware's "
+                                   "own DDR3 sweep test (usb2_integration image)."))
         self.mode_box.currentIndexChanged.connect(self._on_mode)
-        self.mode_box.setVisible(any(p.soak for p in self.profiles))
+        self.mode_box.setVisible(any(p.soak or p.ddr_test for p in self.profiles))
         h.addWidget(self.mode_box)
         self.soak_box = QComboBox()
         for m in SOAK_MINUTES:
@@ -275,7 +277,7 @@ class MainWindow(QMainWindow):
                                    "two (Emulation + Normal), so it lasts twice as long. "
                                    "Stop ends it at any time, as a normal end"))
         self.soak_box.currentIndexChanged.connect(self._on_soak_minutes)
-        self.soak_box.setVisible(self._mode == "soak")
+        self.soak_box.setVisible(self._mode != "test")
         h.addWidget(self.soak_box)
 
         self.reset_btn = button(t("Reset"), "tonal", "refresh",
@@ -498,7 +500,9 @@ class MainWindow(QMainWindow):
             theme.set_prop(self.action_btn, "variant", "danger")
             self.action_btn.setToolTip("")
         else:
-            self.action_btn.setText(t("Start soak") if self._mode == "soak" else t("Start"))
+            self.action_btn.setText({"soak": t("Start soak"),
+                                     "ddr": t("Start DDR test")}.get(self._mode,
+                                                                     t("Start")))
             self.action_btn.setIcon(icons.icon("play", "on_primary", 20))
             theme.set_prop(self.action_btn, "variant", "filled")
         self.action_btn.setIconSize(QSize(20, 20))
@@ -515,21 +519,26 @@ class MainWindow(QMainWindow):
     def _update_enablement(self):
         ctl = self.ctl
         missing = ctl.missing()
-        soak = self._mode == "soak"
+        bench = self._mode in ("soak", "ddr")
         if not (ctl.busy or ctl.armed):
             shown = ctl.preview_profile()
             if missing:
                 why = t("Missing: {items}").format(items=", ".join(missing))
-            elif soak and shown is None:
-                why = t("Connect the board to soak first")
-            elif soak and shown.soak is None:
+            elif bench and shown is None:
+                why = t("Connect the board to test first")
+            elif self._mode == "soak" and shown.soak is None:
                 why = t("{name} has no soak test ([soak] in its product.toml)").format(
                     name=shown.display_name)
+            elif self._mode == "ddr" and shown.ddr_test is None:
+                why = t("{name} has no DDR3 self-test ([ddr_test] in its "
+                        "product.toml)").format(name=shown.display_name)
             else:
                 why = ""
             self.action_btn.setEnabled(not why)
             self.action_btn.setToolTip(why or (
-                t("Run the soak test on the connected board") if soak else
+                t("Run the soak test on the connected board") if self._mode == "soak"
+                else t("Run the DDR3 self-test on the connected board")
+                if self._mode == "ddr" else
                 t("Arm the station: each newly connected board is recognised and run "
                   "automatically")))
         else:
@@ -540,12 +549,12 @@ class MainWindow(QMainWindow):
         self.mode_box.setEnabled(ctl.idle)
         self.soak_box.setEnabled(ctl.idle)
         single = (ctl.idle and ctl.profile is not None and not missing
-                  and not soak)
+                  and not bench)
         self.stepper.set_interactive(
             single, lambda n: t("Single step: {label}").format(label=n.name_text)
             if single else ("" if ctl.profile is not None else
                             t("Connect a board first (click Start to recognise it)")))
-        can_retry = ctl.can_retry() and not soak
+        can_retry = ctl.can_retry() and not bench
         for sid, s in self._steps.items():
             self.stepper.set_retry(sid, can_retry and s.status == StepStatus.FAILED)
 
@@ -561,17 +570,26 @@ class MainWindow(QMainWindow):
             return
         self._shown_id = sid
         soak = self._mode == "soak"
-        if shown is None or (soak and shown.soak is None):
+        ddr = self._mode == "ddr"
+        missing_test = ((soak and shown is not None and shown.soak is None)
+                        or (ddr and shown is not None and shown.ddr_test is None))
+        if shown is None or missing_test:
             self._steps.clear()
             self._fixture_need = {}
-            self.stepper.show_hint(
-                t("Connect the board under test") if shown is None else
-                t("{name} has no soak test ([soak] in its product.toml)").format(
-                    name=shown.display_name))
+            if shown is None:
+                hint = t("Connect the board under test")
+            elif soak:
+                hint = t("{name} has no soak test ([soak] in its product.toml)").format(
+                    name=shown.display_name)
+            else:
+                hint = t("{name} has no DDR3 self-test ([ddr_test] in its "
+                         "product.toml)").format(name=shown.display_name)
+            self.stepper.show_hint(hint)
             self._layout_matrix(None)
             return
         old = self._steps if keep_status else {}
-        plan = soak_plan(shown, self._soak_minutes) if soak else sequence_plan(shown)
+        plan = (soak_plan(shown, self._soak_minutes) if soak else
+                ddr_plan(shown, self._soak_minutes) if ddr else sequence_plan(shown))
         self._steps = {}
         self._fixture_need = {}
         rows = []
@@ -587,7 +605,7 @@ class MainWindow(QMainWindow):
         for step_id, s in self._steps.items():
             self.stepper.set_status(step_id, s.status, s.duration)
             self.stepper.set_note(step_id, s.note)
-        self._layout_matrix(None if soak else shown)
+        self._layout_matrix(None if (soak or ddr) else shown)
         self._update_enablement()
 
     @staticmethod
@@ -696,7 +714,14 @@ class MainWindow(QMainWindow):
             else:
                 rows.append(("ok" if ctl.test_link_ok() else "bad", t("Analyzer"), what))
         shown = ctl.preview_profile()
-        if self._mode == "soak":
+        if self._mode == "ddr":
+            if shown is not None and shown.ddr_test is not None:
+                need = shown.ddr_test.min_firmware
+                rows.append(("info", t("DDR3 self-test"), " · ".join(x for x in (
+                    "R32_DDRTST 0x0050",
+                    t("firmware >= {fw}").format(fw=need) if need else "",
+                    ddr_length_text(self._soak_minutes)) if x)))
+        elif self._mode == "soak":
             # no fixture: the soak runs on the analyzer's own patterns
             if shown is not None and shown.soak is not None:
                 from ..profiles import format_rate, link_name
@@ -767,7 +792,15 @@ class MainWindow(QMainWindow):
         board = " · ".join(x for x in (p.display_name if p else "",
                                        "SN " + self._board_sn if self._board_sn else "")
                            if x)
-        if kind == "idle" and self._mode == "soak":
+        if kind == "idle" and self._mode == "ddr":
+            self.result_card.set_state(
+                "idle", t("DDR3 self-test"),
+                t("Connect one board running the usb2_integration firmware, choose "
+                  "how long, click Start DDR test: the firmware sweeps the whole DDR3 "
+                  "and compares every beat while the station watches the sweep "
+                  "counter and sticky errors; no fixture needed, and no capture may "
+                  "run meanwhile"))
+        elif kind == "idle" and self._mode == "soak":
             self.result_card.set_state(
                 "idle", t("Soak test"),
                 t("Connect one board, choose how long, click Start soak: continuous "
@@ -787,13 +820,15 @@ class MainWindow(QMainWindow):
             elapsed = time.time() - self._run_t0 if self._run_t0 else 0.0
             order = list(self._steps)
             k = order.index(self._current_sid) + 1 if self._current_sid in order else 0
-            soak = self._steps.get("soak:run")
-            if self._run_kind == "soak" and soak is not None and soak.t_start:
-                # time, not steps: Emulation + Normal, one capture of the
-                # chosen length each (0 = until stopped: indeterminate)
-                total = self._soak_minutes * 60 * 2
+            bench = self._steps.get("soak:run") or self._steps.get("ddr:run")
+            if self._run_kind in ("soak", "ddr") and bench is not None and bench.t_start:
+                # time, not steps: the soak runs Emulation + Normal, one capture
+                # of the chosen length each; the DDR test watches for one
+                # (0 = until stopped: indeterminate)
+                factor = 2 if self._run_kind == "soak" else 1
+                total = self._soak_minutes * 60 * factor
                 self.progress_bar.setRange(0, total)       # 0..0 = indeterminate
-                self.progress_bar.setValue(min(total, int(time.time() - soak.t_start)))
+                self.progress_bar.setValue(min(total, int(time.time() - bench.t_start)))
             else:
                 self.progress_bar.setRange(0, max(1, len(order)))
                 self.progress_bar.setValue(max(0, k - 1))
@@ -833,6 +868,9 @@ class MainWindow(QMainWindow):
         elif self._mode == "soak":
             self._set_caption("")
             self.ctl.run_soak(self._soak_minutes)
+        elif self._mode == "ddr":
+            self._set_caption("")
+            self.ctl.run_ddr(self._soak_minutes)
         else:
             self._set_caption("")
             self.ctl.arm()
@@ -849,7 +887,13 @@ class MainWindow(QMainWindow):
             self.mode_box.setCurrentIndex(self.mode_box.findData(self._mode))
             return
         self._mode = mode
-        self.soak_box.setVisible(mode == "soak")
+        self.soak_box.setVisible(mode != "test")
+        self.soak_box.setToolTip(
+            t("How long the DDR3 self-test watches; Stop ends it at any time, "
+              "as a normal end") if mode == "ddr" else
+            t("Length of one continuous capture; the soak makes "
+              "two (Emulation + Normal), so it lasts twice as long. "
+              "Stop ends it at any time, as a normal end"))
         self._modes.clear()
         self._progress = self._board_sn = self._run_detail = self._retry_label = ""
         self._run_elapsed, self._run_t0, self._run_kind = 0.0, 0.0, ""
@@ -928,7 +972,7 @@ class MainWindow(QMainWindow):
         if full:
             # a soak is a whole-board run too, but not a production verdict:
             # it stays out of the session tally
-            self._run_kind = "soak" if self._mode == "soak" else "full"
+            self._run_kind = {"soak": "soak", "ddr": "ddr"}.get(self._mode, "full")
             self._modes.clear()
             self._progress = ""
             d = self.ctl.detected
